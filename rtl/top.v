@@ -3,24 +3,17 @@ module top(
     output wire [7:0] led
 );
 
-//
-// Clock divider
-//
-// nextpnr-ice40 places/routes this design (PicoRV32 + memory) to a
-// measured Fmax of ~74 MHz on this device, below the 100 MHz board
-// oscillator on P7. Running the whole synchronous design straight off
-// the raw 100 MHz pin violates setup timing: RTL simulation (zero
-// delay) looks perfect, but the physical CPU corrupts its instruction
-// decode after a few cycles and traps. Divide down to 25 MHz, which
-// clears the achievable Fmax with margin.
-//
+//Clock divider
+//The Alchitry Cu provides a 100 MHz input clock. The current PicoRV32 SoC does not meet timing at 100 MHz, with place-and-route showing an
+//achievable frequency of roughly 74 MHz. The system therefore runs from a divided 50 MHz clock, providing timing margin while retaining 
+//substantially more performance than the initial 25 MHz bring-up.
 
 reg [1:0] clkdiv=0;
 
 always @(posedge clk)
     clkdiv<=clkdiv+1;
 
-wire sys_clk=clkdiv[1];
+wire sys_clk=clkdiv[0];
 
 
 //
@@ -39,10 +32,8 @@ end
 assign resetn=reset_counter[7];
 
 
-//
-// PicoRV32 memory interface
-//
 
+//PicoRV32 memory interface
 wire trap;
 
 wire mem_valid;
@@ -55,9 +46,8 @@ wire [3:0] mem_wstrb;
 wire [31:0] mem_rdata;
 
 
-//
-// 4 KB RAM
-//
+
+//4 KB RAM
 
 reg [31:0] memory [0:1023];
 
@@ -69,10 +59,8 @@ initial begin
 end
 
 
-//
-// Memory-mapped LED register
-//
 
+//Memory mapped LED register
 reg led_reg=0;
 
 wire ram_select;
@@ -87,13 +75,9 @@ assign led_select =
     (mem_addr==32'h10000000);
 
 
-//
-// Synchronous RAM
-//
-// This follows the style used by PicoRV32's
-// reference PicoSoC memory implementation.
-//
 
+//Synchronous RAM
+//This follows the style used by PicoRV32's reference PicoSoC memory implementation.
 always @(posedge sys_clk)
 begin
     ram_ready<=mem_valid &&
@@ -141,10 +125,8 @@ begin
 end
 
 
-//
-// Return data / ready to processor
-//
 
+// Return data / ready to processor
 assign mem_ready =
     ram_ready ||
     led_ready;
@@ -154,11 +136,7 @@ assign mem_rdata =
     led_select ? {31'b0,led_reg} :
     32'b0;
 
-
-//
 // Debug indicators
-//
-
 reg saw_mem_request=0;
 reg saw_instruction_fetch=0;
 reg saw_mmio_write=0;
@@ -178,30 +156,18 @@ begin
 end
 
 
-//
+
 // LEDs
-//
-
 assign led[0]=led_reg;
-
 assign led[1]=resetn;
-
 assign led[2]=saw_mem_request;
-
 assign led[3]=saw_instruction_fetch;
-
 assign led[4]=saw_mmio_write;
-
 assign led[5]=trap;
-
 assign led[6]=0;
 assign led[7]=0;
 
-
-//
 // RISC-V CPU
-//
-
 picorv32 #(
     .PROGADDR_RESET(32'h00000000),
 

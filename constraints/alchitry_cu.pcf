@@ -4,7 +4,7 @@ set_io clk P7
 # 100 MHz clk / 4 = 25 MHz), not the raw pin clock. Without this,
 # nextpnr checks that domain against the --freq 100 blanket target
 # and reports a false failure, since it only ever runs at 25 MHz.
-set_frequency clkdiv[1] 25
+set_frequency clkdiv[0] 50
 
 set_io led[0] J11
 set_io led[1] K11
