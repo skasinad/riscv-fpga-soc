@@ -60,20 +60,28 @@ end
 
 
 
-//Memory mapped LED register
-reg led_reg=0;
+//MMIO register bank
+localparam GPIO_OUT_ADDR     = 32'h10000000;
+localparam SYS_STATUS_ADDR   = 32'h10000004;
+localparam CYCLE_COUNT_LO    = 32'h10000008;
+localparam CYCLE_COUNT_HI    = 32'h1000000C;
+localparam DEBUG_CTRL_ADDR   = 32'h10000010;
+
+reg [7:0] gpio_out=0;
+reg [31:0] debug_ctrl=0;
+reg [63:0] cycle_counter=0;
 
 wire ram_select;
-wire led_select;
+wire mmio_select;
 
 assign ram_select =
     mem_valid &&
     (mem_addr<32'h00001000);
 
-assign led_select =
+assign mmio_select =
     mem_valid &&
-    (mem_addr==32'h10000000);
-
+    (mem_addr>=32'h10000000) &&
+    (mem_addr<=32'h10000010);
 
 
 //Synchronous RAM
@@ -109,37 +117,92 @@ end
 // LED MMIO acknowledgement
 //
 
-reg led_ready=0;
+//Hardware cycle counter
+always @(posedge sys_clk)
+begin
+    if(!resetn)
+        cycle_counter<=0;
+    else
+        cycle_counter<=cycle_counter+1;
+end
+
+
+//Debug indicators
+reg saw_mem_request=0;
+reg saw_instruction_fetch=0;
+reg saw_mmio_write=0;
+
+//MMIO acknowledgement and writes
+reg mmio_ready=0;
+reg [31:0] mmio_rdata=0;
 
 always @(posedge sys_clk)
 begin
-    led_ready<=0;
+    mmio_ready<=0;
 
-    if(led_select&&!led_ready)
+    if(mmio_select&&!mmio_ready)
     begin
-        led_ready<=1;
+        mmio_ready<=1;
 
-        if(mem_wstrb!=0)
-            led_reg<=mem_wdata[0];
+        case(mem_addr)
+
+            GPIO_OUT_ADDR:
+            begin
+                if(mem_wstrb!=0)
+                    gpio_out<=mem_wdata[7:0];
+
+                mmio_rdata<={24'b0,gpio_out};
+            end
+
+            SYS_STATUS_ADDR:
+            begin
+                mmio_rdata<={
+                    26'b0,
+                    trap,
+                    saw_mmio_write,
+                    saw_instruction_fetch,
+                    saw_mem_request,
+                    resetn,
+                    1'b1
+                };
+            end
+
+            CYCLE_COUNT_LO:
+            begin
+                mmio_rdata<=cycle_counter[31:0];
+            end
+
+            CYCLE_COUNT_HI:
+            begin
+                mmio_rdata<=cycle_counter[63:32];
+            end
+
+            DEBUG_CTRL_ADDR:
+            begin
+                if(mem_wstrb!=0)
+                    debug_ctrl<=mem_wdata;
+
+                mmio_rdata<=debug_ctrl;
+            end
+
+            default:
+                mmio_rdata<=32'b0;
+
+        endcase
     end
 end
 
 
-
-// Return data / ready to processor
+//Return data / ready to processor
 assign mem_ready =
     ram_ready ||
-    led_ready;
+    mmio_ready;
 
 assign mem_rdata =
     ram_ready ? ram_rdata :
-    led_select ? {31'b0,led_reg} :
+    mmio_ready ? mmio_rdata :
     32'b0;
 
-// Debug indicators
-reg saw_mem_request=0;
-reg saw_instruction_fetch=0;
-reg saw_mmio_write=0;
 
 always @(posedge sys_clk)
 begin
@@ -158,13 +221,13 @@ end
 
 
 // LEDs
-assign led[0]=led_reg;
-assign led[1]=resetn;
+assign led[0]=gpio_out[0];
+assign led[1]=gpio_out[1];
 assign led[2]=saw_mem_request;
 assign led[3]=saw_instruction_fetch;
 assign led[4]=saw_mmio_write;
 assign led[5]=trap;
-assign led[6]=0;
+assign led[6]=resetn;
 assign led[7]=0;
 
 // RISC-V CPU
