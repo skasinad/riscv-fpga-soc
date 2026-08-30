@@ -1,0 +1,11 @@
+*.asc
+*.bin
+*.json
+*.blif
+*.vcd
+*.log
+*.out
+
+__pycache__/
+.DS_Store
+build/
