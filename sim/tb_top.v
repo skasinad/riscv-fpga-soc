@@ -12,40 +12,45 @@ top dut (
     .led(led)
 );
 
-integer cycle;
+// firmware runs the full POST sequence, ending in a ~5,000,000 sys_clk
+// (10,000,000 raw clk) visible delay before POST_PASS -- give it enough
+// margin to actually get there rather than timing out early
+localparam RAW_CLK_LIMIT = 12_000_000;
+
+reg [7:0] last_gpio;
+integer i;
 
 initial begin
     $dumpfile("sim/wave.vcd");
     $dumpvars(0, tb_top);
 
-    for (cycle = 0; cycle < 1600; cycle = cycle + 1) begin
-        @(posedge clk);
-        #1;
-        $display("cyc=%0d resetn=%b state=%s mem_valid=%b mem_instr=%b mem_ready=%b addr=%h wdata=%h wstrb=%b rdata=%h trap=%b",
-            cycle,
-            dut.resetn,
-            dut.cpu.dbg_ascii_state,
-            dut.mem_valid,
-            dut.mem_instr,
-            dut.mem_ready,
-            dut.mem_addr,
-            dut.mem_wdata,
-            dut.mem_wstrb,
-            dut.mem_rdata,
-            dut.trap
-        );
+    last_gpio = 8'hFF; // force a print on the first sample
 
-        if (dut.trap) begin
-            $display(">>> TRAP asserted at cycle %0d, mem_addr=%h", cycle, dut.mem_addr);
+    for (i = 0; i < RAW_CLK_LIMIT; i = i + 1) begin
+        @(posedge clk);
+
+        if (dut.gpio_out !== last_gpio) begin
+            $display("t=%0t gpio_out=%02h trap=%b", $time, dut.gpio_out, dut.trap);
+            last_gpio = dut.gpio_out;
         end
 
-        if (dut.led_reg) begin
-            $display(">>> LED_REG went high at cycle %0d", cycle);
+        if (dut.trap) begin
+            $display(">>> TRAP asserted at t=%0t, mem_addr=%h", $time, dut.mem_addr);
+            $finish;
+        end
+
+        if (dut.gpio_out == 8'h3F) begin
+            $display(">>> POST_PASS (gpio_out=0x3F) at t=%0t", $time);
+            $finish;
+        end
+
+        if (dut.gpio_out[6]) begin
+            $display(">>> POST fault, gpio_out=%02h at t=%0t", dut.gpio_out, $time);
             $finish;
         end
     end
 
-    $display(">>> Simulation ended without LED going on. led_reg=%b trap=%b", dut.led_reg, dut.trap);
+    $display(">>> TIMEOUT after %0d raw clk edges. gpio_out=%02h trap=%b", RAW_CLK_LIMIT, dut.gpio_out, dut.trap);
     $finish;
 end
 

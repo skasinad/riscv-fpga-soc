@@ -4,6 +4,28 @@
 #define CYCLE_COUNT_HI  (*(volatile unsigned int *)0x1000000C)
 #define DEBUG_CTRL      (*(volatile unsigned int *)0x10000010)
 
+#define POST_RUNNING    0x01
+#define POST_GPIO_OK    0x02
+#define POST_STATUS_OK  0x04
+#define POST_TIMER_OK   0x08
+#define POST_DEBUG_OK   0x10
+#define POST_PASS       0x3F
+
+// fault codes set bit 6 (0x40) plus a test-specific bit, so a failure
+// is visually distinct on the LEDs from any POST_* progress code above
+#define ERR_STATUS      0x41
+#define ERR_TIMER       0x42
+#define ERR_DEBUG       0x44
+
+static void fault(unsigned int code)
+{
+    GPIO_OUT=code;
+
+    while(1)
+    {
+    }
+}
+
 static void delay_cycles(unsigned int cycles)
 {
     unsigned int start=CYCLE_COUNT_LO;
@@ -18,32 +40,46 @@ int main(void)
     unsigned int status;
     unsigned int start;
     unsigned int end;
+    unsigned int debug_value;
 
-    GPIO_OUT=0x01;
+    GPIO_OUT=POST_RUNNING;
 
+    //GPIO write path is working if execution reaches here
+    GPIO_OUT=POST_GPIO_OK;
+
+    //System status test
     status=SYS_STATUS;
 
     if((status&0x01)==0)
-    {
-        GPIO_OUT=0x80;
+        fault(ERR_STATUS);
 
-        while(1)
-        {
-        }
-    }
+    GPIO_OUT=POST_STATUS_OK;
 
+    //Hardware cycle counter test
     start=CYCLE_COUNT_LO;
 
-    delay_cycles(5000000);
+    delay_cycles(1000);
 
     end=CYCLE_COUNT_LO;
 
-    if(end>start)
-        GPIO_OUT=0x03;
-    else
-        GPIO_OUT=0x40;
+    if(end<=start)
+        fault(ERR_TIMER);
 
+    GPIO_OUT=POST_TIMER_OK;
+
+    //Debug register read/write test
     DEBUG_CTRL=0x12345678;
+    debug_value=DEBUG_CTRL;
+
+    if(debug_value!=0x12345678)
+        fault(ERR_DEBUG);
+
+    GPIO_OUT=POST_DEBUG_OK;
+
+    //Short visible delay before final PASS state
+    delay_cycles(5000000);
+
+    GPIO_OUT=POST_PASS;
 
     while(1)
     {

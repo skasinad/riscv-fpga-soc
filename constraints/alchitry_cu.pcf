@@ -1,9 +1,9 @@
 set_io clk P7
 
 # CPU/memory/LED logic all run on the internally divided clock (raw
-# 100 MHz clk / 4 = 25 MHz), not the raw pin clock. Without this,
+# 100 MHz clk / 2 = 50 MHz), not the raw pin clock. Without this,
 # nextpnr checks that domain against the --freq 100 blanket target
-# and reports a false failure, since it only ever runs at 25 MHz.
+# and reports a false failure, since it only ever runs at 50 MHz.
 set_frequency clkdiv[0] 50
 
 set_io led[0] J11

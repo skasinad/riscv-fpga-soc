@@ -3,10 +3,13 @@ module top(
     output wire [7:0] led
 );
 
-//Clock divider
-//The Alchitry Cu provides a 100 MHz input clock. The current PicoRV32 SoC does not meet timing at 100 MHz, with place-and-route showing an
-//achievable frequency of roughly 74 MHz. The system therefore runs from a divided 50 MHz clock, providing timing margin while retaining 
-//substantially more performance than the initial 25 MHz bring-up.
+// Clock divider
+//
+// The Alchitry Cu provides a 100 MHz input clock. The current PicoRV32 SoC
+// does not meet timing at 100 MHz -- place-and-route shows an achievable
+// frequency of roughly 74 MHz. The system runs from a divided 50 MHz clock,
+// which gives comfortable margin while still being faster than the initial
+// 25 MHz bring-up frequency.
 
 reg [1:0] clkdiv=0;
 
@@ -16,9 +19,7 @@ always @(posedge clk)
 wire sys_clk=clkdiv[0];
 
 
-//
 // Reset generation
-//
 
 reg [7:0] reset_counter=0;
 wire resetn;
@@ -33,7 +34,7 @@ assign resetn=reset_counter[7];
 
 
 
-//PicoRV32 memory interface
+// PicoRV32 memory interface
 wire trap;
 
 wire mem_valid;
@@ -47,12 +48,17 @@ wire [31:0] mem_rdata;
 
 
 
-//4 KB RAM
+// 4 KB RAM
+
+localparam RAM_BYTES = 32'h00001000;
 
 reg [31:0] memory [0:1023];
 
 reg ram_ready=0;
 reg [31:0] ram_rdata=0;
+
+// word index into memory[]; mem_addr is byte-addressed, memory[] is 32-bit wide
+wire [9:0] ram_word_addr = mem_addr[11:2];
 
 initial begin
     $readmemh("firmware/firmware.hex",memory);
@@ -60,64 +66,58 @@ end
 
 
 
-//MMIO register bank
+// MMIO register bank
 localparam GPIO_OUT_ADDR     = 32'h10000000;
 localparam SYS_STATUS_ADDR   = 32'h10000004;
 localparam CYCLE_COUNT_LO    = 32'h10000008;
 localparam CYCLE_COUNT_HI    = 32'h1000000C;
 localparam DEBUG_CTRL_ADDR   = 32'h10000010;
 
+localparam MMIO_BASE = GPIO_OUT_ADDR;
+localparam MMIO_TOP  = DEBUG_CTRL_ADDR;
+
 reg [7:0] gpio_out=0;
 reg [31:0] debug_ctrl=0;
 reg [63:0] cycle_counter=0;
 
-wire ram_select;
 wire mmio_select;
-
-assign ram_select =
-    mem_valid &&
-    (mem_addr<32'h00001000);
 
 assign mmio_select =
     mem_valid &&
-    (mem_addr>=32'h10000000) &&
-    (mem_addr<=32'h10000010);
+    (mem_addr>=MMIO_BASE) &&
+    (mem_addr<=MMIO_TOP);
 
 
-//Synchronous RAM
-//This follows the style used by PicoRV32's reference PicoSoC memory implementation.
+// Synchronous RAM
+// This follows the style used by PicoRV32's reference PicoSoC memory implementation.
 always @(posedge sys_clk)
 begin
     ram_ready<=mem_valid &&
                !ram_ready &&
-               (mem_addr<32'h00001000);
+               (mem_addr<RAM_BYTES);
 
     if(mem_valid &&
        !ram_ready &&
-       (mem_addr<32'h00001000))
+       (mem_addr<RAM_BYTES))
     begin
-        ram_rdata<=memory[mem_addr[11:2]];
+        ram_rdata<=memory[ram_word_addr];
 
         if(mem_wstrb[0])
-            memory[mem_addr[11:2]][7:0]<=mem_wdata[7:0];
+            memory[ram_word_addr][7:0]<=mem_wdata[7:0];
 
         if(mem_wstrb[1])
-            memory[mem_addr[11:2]][15:8]<=mem_wdata[15:8];
+            memory[ram_word_addr][15:8]<=mem_wdata[15:8];
 
         if(mem_wstrb[2])
-            memory[mem_addr[11:2]][23:16]<=mem_wdata[23:16];
+            memory[ram_word_addr][23:16]<=mem_wdata[23:16];
 
         if(mem_wstrb[3])
-            memory[mem_addr[11:2]][31:24]<=mem_wdata[31:24];
+            memory[ram_word_addr][31:24]<=mem_wdata[31:24];
     end
 end
 
 
-//
-// LED MMIO acknowledgement
-//
-
-//Hardware cycle counter
+// Hardware cycle counter
 always @(posedge sys_clk)
 begin
     if(!resetn)
@@ -127,12 +127,12 @@ begin
 end
 
 
-//Debug indicators
+// Debug indicators
 reg saw_mem_request=0;
 reg saw_instruction_fetch=0;
 reg saw_mmio_write=0;
 
-//MMIO acknowledgement and writes
+// MMIO acknowledgement and writes
 reg mmio_ready=0;
 reg [31:0] mmio_rdata=0;
 
@@ -193,7 +193,7 @@ begin
 end
 
 
-//Return data / ready to processor
+// Return data / ready to processor
 assign mem_ready =
     ram_ready ||
     mmio_ready;
@@ -213,7 +213,7 @@ begin
         saw_instruction_fetch<=1;
 
     if(mem_valid &&
-       mem_addr==32'h10000000 &&
+       mem_addr==GPIO_OUT_ADDR &&
        mem_wstrb!=0)
         saw_mmio_write<=1;
 end
@@ -223,12 +223,12 @@ end
 // LEDs
 assign led[0]=gpio_out[0];
 assign led[1]=gpio_out[1];
-assign led[2]=saw_mem_request;
-assign led[3]=saw_instruction_fetch;
-assign led[4]=saw_mmio_write;
-assign led[5]=trap;
-assign led[6]=resetn;
-assign led[7]=0;
+assign led[2]=gpio_out[2];
+assign led[3]=gpio_out[3];
+assign led[4]=gpio_out[4];
+assign led[5]=gpio_out[5];
+assign led[6]=gpio_out[6];
+assign led[7]=trap;
 
 // RISC-V CPU
 picorv32 #(
