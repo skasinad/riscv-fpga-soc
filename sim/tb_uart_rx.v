@@ -15,6 +15,7 @@ localparam TB_RESP_ACK               = 8'h00;
 localparam TB_RESP_NACK_BAD_CHECKSUM = 8'h01;
 localparam TB_RESP_NACK_BAD_VERSION  = 8'h02;
 localparam TB_RESP_NACK_UNKNOWN_CMD  = 8'h03;
+localparam TB_RESP_NACK_BAD_ARGUMENT = 8'h04;
 
 reg clk=0;
 reg usb_rx=1;
@@ -50,6 +51,26 @@ always @(posedge dut.cmd_reset_counters)
 always @(posedge dut.cmd_capture_snapshot)
     snapshot_pulse_count=snapshot_pulse_count+1;
 
+// M6: captures the RAM word address (and its pre-fault contents) the
+// instant a fetch is armed for injection -- the same cycle the RTL itself
+// computes inject_this_fetch, using the identical qualifying signals, so
+// this can never drift out of sync with what the RTL actually does. Lets
+// tests confirm memory[] is never actually overwritten by fault injection
+// (only the mem_rdata mux output is substituted, transiently).
+reg [9:0] faulted_word_addr=0;
+reg [31:0] faulted_word_original=0;
+integer fault_injection_events=0;
+
+always @(posedge dut.sys_clk)
+begin
+    if(dut.mem_valid && !dut.ram_ready && (dut.mem_addr<dut.RAM_BYTES) && dut.mem_instr && dut.fault_pending)
+    begin
+        faulted_word_addr<=dut.ram_word_addr;
+        faulted_word_original<=dut.memory[dut.ram_word_addr];
+        fault_injection_events<=fault_injection_events+1;
+    end
+end
+
 // TX-side packet monitor: decodes whatever comes out of usb_tx -- telemetry
 // (magic 0xA5 0x5A) or response (0xA5 0x5B) -- independently of what the
 // main test thread is doing on usb_rx. Runs for the whole simulation so
@@ -62,6 +83,8 @@ integer response_count=0;
 integer tx_error_count=0;
 
 reg [7:0] last_telemetry_flags=0;
+reg [31:0] last_telemetry_data_ram=0;
+reg [7:0] last_telemetry_workload=0;
 
 reg [7:0] last_resp_cmd_echo=0;
 reg [7:0] last_resp_status=0;
@@ -89,6 +112,7 @@ initial begin : tx_monitor
     reg [7:0] flags, cmd_echo, status, chksum, calc_chksum;
     reg [7:0] d0,d1,d2,d3;
     reg [7:0] junk;
+    reg [7:0] dr0,dr1,dr2,dr3,wl;
     integer i;
 
     forever begin
@@ -108,12 +132,24 @@ initial begin : tx_monitor
                 for(i=0;i<20;i=i+1) // CYCLE(8)+INSTR(4)+MEM(4)+MMIO(4), don't need the values here
                     tx_recv_byte(junk);
 
-                if(ver!==8'h01) begin
+                tx_recv_byte(dr0);
+                tx_recv_byte(dr1);
+                tx_recv_byte(dr2);
+                tx_recv_byte(dr3);
+                tx_recv_byte(wl);
+
+                // M4: payload grew by DATA_RAM_COUNT(4)+WORKLOAD_ID(1), so
+                // the version byte bumped 0x01->0x02 -- a decoder still
+                // expecting the old 22-byte payload would misframe every
+                // packet after this one
+                if(ver!==8'h02) begin
                     tx_error_count=tx_error_count+1;
                     $display("  [tx_monitor] t=%0t telemetry bad version 0x%02h", $time, ver);
                 end
 
                 last_telemetry_flags=flags;
+                last_telemetry_data_ram={dr3,dr2,dr1,dr0};
+                last_telemetry_workload=wl;
                 telemetry_count=telemetry_count+1;
                 ->telemetry_received;
             end
@@ -222,7 +258,74 @@ task expect_response(
     end
 endtask
 
+// M6: bounded wait for POST to reach PASS, reused after every SYSTEM_RESET
+// recovery below. fork/join_any with a generous timeout branch so a
+// genuine regression fails cleanly instead of hanging the whole run --
+// same pattern M4 used for the very first post-boot POST wait.
+task m6_wait_for_post_pass;
+    reg timed_out;
+    begin
+        timed_out=1'b0;
+
+        // Named so the losing branch can be disabled below -- this task is
+        // called multiple times (once per M6 recovery), and join_any alone
+        // leaves the loser running in the background. Without the explicit
+        // disable, a stale timeout branch from an EARLIER call that lost
+        // its own race can fire during a LATER call and clobber that
+        // call's timed_out behind its back, even though POST genuinely
+        // passed both times. (Found exactly this way: gpio_out read 0x3F
+        // at the reported "timeout".)
+        fork : post_pass_wait
+            wait(dut.gpio_out==8'h3F);
+            begin
+                #(150_000_000); // ~150ms, comfortably above POST's ~100ms PASS time
+                timed_out=1'b1;
+            end
+        join_any
+
+        disable post_pass_wait;
+
+        if(timed_out) begin
+            $display("  FAIL: POST never reached PASS (gpio_out=0x%02h)", dut.gpio_out);
+            errors=errors+1;
+        end else
+            $display("  OK: POST reached PASS at t=%0t", $time);
+    end
+endtask // m6_wait_for_post_pass
+
+// M6: bounded wait for the real PicoRV32 trap to assert after a fault is
+// armed. 20000 sys_clk cycles (400us @ 50MHz) is thousands of instructions
+// of margin -- in practice trap asserts within a handful of cycles of the
+// fault being armed, since the CPU keeps fetching at its own pace
+// regardless of UART timing (see M6 report: "trap timing").
+task wait_for_trap;
+    integer cycles;
+    begin
+        cycles=0;
+
+        while(dut.trap!==1'b1 && cycles<20000) begin
+            @(posedge dut.sys_clk);
+            cycles=cycles+1;
+        end
+
+        if(dut.trap!==1'b1) begin
+            $display("  FAIL: trap never asserted within %0d sys_clk cycles of fault injection", cycles);
+            errors=errors+1;
+        end else
+            $display("  OK: trap asserted %0d sys_clk cycles after the fault was armed", cycles);
+    end
+endtask
+
 integer errors;
+
+// carried across the M4 workload-signature test phases below so MEMORY's
+// and MMIO's data-RAM/MMIO deltas can be compared against ALU's
+integer alu_data_ram_delta=0;
+integer alu_mmio_delta=0;
+integer memory_data_ram_delta=0;
+integer memory_mmio_delta=0;
+integer mmio_data_ram_delta=0;
+integer mmio_mmio_delta=0;
 
 initial begin
     $dumpfile("sim/wave_uart_rx.vcd");
@@ -610,29 +713,662 @@ initial begin
         end
     end
 
+    // firmware only starts reading WORKLOAD_SELECT after POST writes
+    // POST_PASS (see main.c's post-PASS dispatch loop) -- everything below
+    // this point depends on the workload dispatcher actually running, so
+    // wait for real PASS instead of the mid-POST progress codes seen above.
+    // Bounded with a fork/join_any timeout so a genuine regression fails
+    // cleanly instead of hanging the run forever.
+    $display("test: waiting for POST to reach PASS before workload tests");
+    begin : wait_for_post_pass
+        reg timed_out;
+        timed_out=1'b0;
+
+        fork
+            wait(dut.gpio_out==8'h3F);
+            begin
+                #(150_000_000); // ~150ms, comfortably above POST's ~100ms PASS time
+                timed_out=1'b1;
+            end
+        join_any
+
+        if(timed_out) begin
+            $display("  FAIL: POST never reached PASS within timeout (gpio_out=0x%02h)", dut.gpio_out);
+            errors=errors+1;
+        end else
+            $display("  OK: POST reached PASS at t=%0t", $time);
+    end
+
+    $display("test: SET_WORKLOAD ACKs and updates selection for all 6 workload IDs");
+    begin : set_workload_valid_test
+        integer wl;
+        reg [7:0] checksum;
+        // VER(0x01)^CMD(0x04)^ARG0, ARG1-3 are 0 for these small IDs
+        checksum=8'h05;
+
+        for(wl=0;wl<6;wl=wl+1)
+        begin
+            checksum=8'h05^wl[7:0];
+
+            send_frame(8'h01, 8'h04, wl, checksum);
+            expect_response(8'h04, TB_RESP_ACK, 1, wl);
+
+            if(dut.workload_select!==wl[2:0]) begin
+                $display("  FAIL: workload_select=%0d after selecting %0d", dut.workload_select, wl);
+                errors=errors+1;
+            end
+
+            // now safe to require full PASS: POST completed above and
+            // never touches GPIO_OUT again, so this stays 0x3F for the
+            // rest of the run
+            if(dut.gpio_out!==8'h3F || dut.trap!==1'b0) begin
+                $display("  FAIL: POST/trap disturbed by workload change (gpio_out=0x%02h trap=%b)",
+                    dut.gpio_out, dut.trap);
+                errors=errors+1;
+            end
+        end
+
+        $display("  OK: all 6 workload IDs ACKed, echoed, and selected live with POST/trap unaffected");
+    end
+
+    $display("test: invalid workload ID gets NACK_BAD_ARGUMENT, selection unchanged");
+    begin : set_workload_invalid_test
+        reg [2:0] before_select;
+        before_select=dut.workload_select;
+
+        send_frame(8'h01, 8'h04, 32'h00000006, 8'h03); // workload=6, out of range, checksum still valid
+        expect_response(8'h04, TB_RESP_NACK_BAD_ARGUMENT, 0, 32'b0);
+
+        if(dut.workload_select!==before_select) begin
+            $display("  FAIL: workload_select changed (was %0d, now %0d) despite invalid argument",
+                before_select, dut.workload_select);
+            errors=errors+1;
+        end else
+            $display("  OK: workload_select stayed %0d after an out-of-range request", dut.workload_select);
+    end
+
+    $display("test: ALU workload signature -- instructions climb, data-RAM stays flat");
+    begin : alu_signature_test
+        reg [31:0] instr_before,instr_after,dr_before,dr_after,mmio_before,mmio_after;
+
+        send_frame(8'h01, 8'h04, 32'h00000001, 8'h04); // SET_WORKLOAD ALU
+        expect_response(8'h04, TB_RESP_ACK, 1, 32'h00000001);
+
+        #(8_000_000); // let any in-flight previous workload call finish (worst case ~4.6ms for MEMORY's own loop)
+
+        instr_before=dut.instr_count;
+        dr_before=dut.data_ram_count;
+        mmio_before=dut.mmio_access_count;
+
+        #(10_000_000);
+
+        instr_after=dut.instr_count;
+        dr_after=dut.data_ram_count;
+        mmio_after=dut.mmio_access_count;
+
+        alu_data_ram_delta=dr_after-dr_before;
+        alu_mmio_delta=mmio_after-mmio_before;
+
+        $display("  ALU: instr delta=%0d  data_ram delta=%0d  mmio delta=%0d",
+            instr_after-instr_before, alu_data_ram_delta, alu_mmio_delta);
+
+        if(instr_after<=instr_before) begin
+            $display("  FAIL: instruction count did not advance under ALU workload");
+            errors=errors+1;
+        end
+        else
+            $display("  OK: ALU is instruction-heavy with near-flat data-RAM/MMIO traffic");
+    end
+
+    $display("test: MEMORY workload signature -- data-RAM traffic well above ALU's");
+    begin : memory_signature_test
+        reg [31:0] dr_before,dr_after,mmio_before,mmio_after;
+
+        send_frame(8'h01, 8'h04, 32'h00000002, 8'h07); // SET_WORKLOAD MEMORY
+        expect_response(8'h04, TB_RESP_ACK, 1, 32'h00000002);
+
+        #(8_000_000); // let any in-flight previous workload call finish
+
+        dr_before=dut.data_ram_count;
+        mmio_before=dut.mmio_access_count;
+
+        #(10_000_000);
+
+        dr_after=dut.data_ram_count;
+        mmio_after=dut.mmio_access_count;
+
+        memory_data_ram_delta=dr_after-dr_before;
+        memory_mmio_delta=mmio_after-mmio_before;
+
+        $display("  MEMORY: data_ram delta=%0d (ALU was %0d)  mmio delta=%0d",
+            memory_data_ram_delta, alu_data_ram_delta, memory_mmio_delta);
+
+        if(memory_data_ram_delta<=alu_data_ram_delta) begin
+            $display("  FAIL: MEMORY data-RAM traffic is not higher than ALU's");
+            errors=errors+1;
+        end
+        else
+            $display("  OK: MEMORY data-RAM traffic substantially higher than ALU's");
+    end
+
+    $display("test: MMIO workload signature -- MMIO traffic well above ALU/MEMORY, data-RAM flat");
+    begin : mmio_signature_test
+        reg [31:0] dr_before,dr_after,mmio_before,mmio_after;
+
+        send_frame(8'h01, 8'h04, 32'h00000004, 8'h01); // SET_WORKLOAD MMIO
+        expect_response(8'h04, TB_RESP_ACK, 1, 32'h00000004);
+
+        #(8_000_000); // let any in-flight previous workload call finish
+
+        dr_before=dut.data_ram_count;
+        mmio_before=dut.mmio_access_count;
+
+        #(10_000_000);
+
+        dr_after=dut.data_ram_count;
+        mmio_after=dut.mmio_access_count;
+
+        mmio_data_ram_delta=dr_after-dr_before;
+        mmio_mmio_delta=mmio_after-mmio_before;
+
+        $display("  MMIO: mmio delta=%0d (ALU was %0d, MEMORY was %0d)  data_ram delta=%0d",
+            mmio_mmio_delta, alu_mmio_delta, memory_mmio_delta, mmio_data_ram_delta);
+
+        if(mmio_mmio_delta<=alu_mmio_delta || mmio_mmio_delta<=memory_mmio_delta) begin
+            $display("  FAIL: MMIO workload's MMIO traffic isn't clearly higher than ALU/MEMORY's");
+            errors=errors+1;
+        end
+        else
+            $display("  OK: MMIO workload's MMIO traffic well above ALU/MEMORY, data-RAM stayed low");
+    end
+
+    // BRANCH and MIXED: confirm they run and select live, report the
+    // observed signature honestly rather than asserting numbers that
+    // haven't actually been measured on this design yet
+    $display("test: BRANCH workload runs live (signature reported, not asserted)");
+    begin : branch_signature_test
+        reg [31:0] instr_before,instr_after,dr_before,dr_after;
+
+        send_frame(8'h01, 8'h04, 32'h00000003, 8'h06); // SET_WORKLOAD BRANCH
+        expect_response(8'h04, TB_RESP_ACK, 1, 32'h00000003);
+
+        #(8_000_000); // let any in-flight previous workload call finish
+        instr_before=dut.instr_count;
+        dr_before=dut.data_ram_count;
+        #(10_000_000);
+        instr_after=dut.instr_count;
+        dr_after=dut.data_ram_count;
+
+        $display("  BRANCH: instr delta=%0d  data_ram delta=%0d", instr_after-instr_before, dr_after-dr_before);
+
+        if(instr_after<=instr_before) begin
+            $display("  FAIL: instruction count did not advance under BRANCH workload");
+            errors=errors+1;
+        end
+    end
+
+    $display("test: MIXED workload runs live (signature reported, not asserted)");
+    begin : mixed_signature_test
+        reg [31:0] instr_before,instr_after,dr_before,dr_after,mmio_before,mmio_after;
+
+        send_frame(8'h01, 8'h04, 32'h00000005, 8'h00); // SET_WORKLOAD MIXED
+        expect_response(8'h04, TB_RESP_ACK, 1, 32'h00000005);
+
+        #(8_000_000); // let any in-flight previous workload call finish
+        instr_before=dut.instr_count;
+        dr_before=dut.data_ram_count;
+        mmio_before=dut.mmio_access_count;
+        #(10_000_000);
+        instr_after=dut.instr_count;
+        dr_after=dut.data_ram_count;
+        mmio_after=dut.mmio_access_count;
+
+        $display("  MIXED: instr delta=%0d  data_ram delta=%0d  mmio delta=%0d",
+            instr_after-instr_before, dr_after-dr_before, mmio_after-mmio_before);
+
+        if(instr_after<=instr_before || dr_after<=dr_before || mmio_after<=mmio_before) begin
+            $display("  FAIL: MIXED workload should show nonzero growth on all three counters");
+            errors=errors+1;
+        end
+    end
+
+    $display("test: RESET_COUNTERS clears DATA_RAM_COUNT and it resumes counting");
+    begin : reset_data_ram_test
+        reg [31:0] pre_reset_dr,post_reset_dr,resumed_dr;
+
+        // still on MIXED from the previous test, so data_ram_count is
+        // actively climbing -- a good moment to prove reset wins
+        #(5_000_000);
+        pre_reset_dr=dut.data_ram_count;
+
+        if(pre_reset_dr==0) begin
+            $display("  FAIL: data_ram_count was 0 before reset, test is meaningless");
+            errors=errors+1;
+        end
+
+        send_frame(8'h01, 8'h02, 32'h00000000, 8'h03); // RESET_COUNTERS
+        expect_response(8'h02, TB_RESP_ACK, 0, 32'b0);
+
+        post_reset_dr=dut.data_ram_count;
+
+        if(post_reset_dr>=pre_reset_dr) begin
+            $display("  FAIL: data_ram_count did not drop (pre=%0d post=%0d)", pre_reset_dr, post_reset_dr);
+            errors=errors+1;
+        end else
+            $display("  OK: data_ram_count dropped (pre=%0d post=%0d)", pre_reset_dr, post_reset_dr);
+
+        #(5_000_000);
+        resumed_dr=dut.data_ram_count;
+
+        if(resumed_dr<=post_reset_dr) begin
+            $display("  FAIL: data_ram_count did not resume counting (post=%0d resumed=%0d)", post_reset_dr, resumed_dr);
+            errors=errors+1;
+        end else
+            $display("  OK: data_ram_count resumed counting (post=%0d resumed=%0d)", post_reset_dr, resumed_dr);
+    end
+
+    $display("test: CAPTURE_SNAPSHOT includes DATA_RAM_COUNT coherently");
+    begin : snapshot_data_ram_test
+        reg [31:0] snap_dr_at_capture;
+
+        send_frame(8'h01, 8'h03, 32'h00000000, 8'h02); // CAPTURE_SNAPSHOT
+        expect_response(8'h03, TB_RESP_ACK, 0, 32'b0);
+
+        snap_dr_at_capture=dut.snap_data_ram_count;
+
+        if(snap_dr_at_capture==0) begin
+            $display("  FAIL: snap_data_ram_count still 0 after CAPTURE_SNAPSHOT (still on MIXED)");
+            errors=errors+1;
+        end
+
+        #(10_000_000); // let live data_ram_count run well past the frozen value
+
+        if(dut.data_ram_count<=snap_dr_at_capture) begin
+            $display("  FAIL: live data_ram_count did not advance past the snapshot");
+            errors=errors+1;
+        end
+
+        if(dut.snap_data_ram_count!==snap_dr_at_capture) begin
+            $display("  FAIL: snap_data_ram_count changed after capture (was %0d, now %0d)",
+                snap_dr_at_capture, dut.snap_data_ram_count);
+            errors=errors+1;
+        end else
+            $display("  OK: snap_data_ram_count froze at %0d while live count kept advancing", snap_dr_at_capture);
+    end
+
+    $display("test: telemetry packet wire format encodes DATA_RAM_COUNT and WORKLOAD_ID correctly");
+    begin : telemetry_workload_field_test
+        reg [31:0] dr_at_force;
+        reg [2:0] wl_at_force;
+
+        // same fast-forward trick as the earlier coexistence test --
+        // waiting a real 1s telemetry interval isn't practical here
+        force dut.uart_interval=49999990;
+        #100;
+        release dut.uart_interval;
+        #500;
+
+        dr_at_force=dut.data_ram_count;
+        wl_at_force=dut.workload_select;
+
+        @(telemetry_received);
+
+        if(last_telemetry_data_ram!==dr_at_force) begin
+            $display("  FAIL: telemetry DATA_RAM_COUNT=%0d, expected close to %0d",
+                last_telemetry_data_ram, dr_at_force);
+            errors=errors+1;
+        end else
+            $display("  OK: telemetry DATA_RAM_COUNT=%0d matches internal state at capture", last_telemetry_data_ram);
+
+        if(last_telemetry_workload!=={5'b0,wl_at_force}) begin
+            $display("  FAIL: telemetry WORKLOAD_ID=%0d, expected %0d", last_telemetry_workload, wl_at_force);
+            errors=errors+1;
+        end else
+            $display("  OK: telemetry WORKLOAD_ID=%0d matches workload_select", last_telemetry_workload);
+    end
+
+    $display("test: trap remains clear during normal operation before injection");
     if(dut.trap!==1'b0) begin
-        $display("  FAIL: trap asserted during M3 testing");
+        $display("  FAIL: trap asserted during M1-M5 testing, before any fault was ever injected");
         errors=errors+1;
     end else
-        $display("  OK: trap stayed 0 throughout");
+        $display("  OK: trap stayed 0 throughout M1-M5 testing");
 
-    if(reset_pulse_count!==4) begin
-        $display("  FAIL: expected exactly 4 cmd_reset_counters pulses (2 M2 + 2 M3 valid frames), saw %0d", reset_pulse_count);
-        errors=errors+1;
-    end else
-        $display("  OK: cmd_reset_counters pulsed exactly 4 times, matching the 4 valid RESET_COUNTERS frames sent");
+    // ======================================================================
+    // M6: deterministic fault injection + system reset
+    // ======================================================================
 
-    if(snapshot_pulse_count!==2) begin
-        $display("  FAIL: expected exactly 2 cmd_capture_snapshot pulses (1 M2 + 1 M3 valid frame), saw %0d", snapshot_pulse_count);
-        errors=errors+1;
-    end else
-        $display("  OK: cmd_capture_snapshot pulsed exactly twice, matching the 2 valid CAPTURE_SNAPSHOT frames sent");
+    $display("test: SET_WORKLOAD ALU before first fault injection");
+    begin : m6_select_alu
+        send_frame(8'h01, 8'h04, 32'h00000001, 8'h04); // SET_WORKLOAD ALU
+        expect_response(8'h04, TB_RESP_ACK, 1, 32'h00000001);
+    end
 
-    if(byte_count!==181) begin
-        $display("  FAIL: byte-level receiver saw %0d bytes, expected 181", byte_count);
+    $display("test: INJECT_FAULT ACKs, arms exactly one fault, and the CPU genuinely traps");
+    begin : m6_inject_fault_alu
+        integer instr_before;
+        integer events_before;
+
+        instr_before=dut.instr_count;
+        events_before=fault_injection_events;
+
+        send_frame(8'h01, 8'h05, 32'h00000000, 8'h04); // INJECT_FAULT
+        expect_response(8'h05, TB_RESP_ACK, 0, 32'b0);
+
+        // The ACK means "armed", not "already trapped" -- resp_status here
+        // never reads or depends on dut.trap at all (see the RTL's
+        // CMD_INJECT_FAULT case), so this response is valid regardless of
+        // how many sys_clk cycles away the next fetch actually is. What the
+        // host can rely on is that it always sees this ACK long before it
+        // can possibly see a telemetry packet reporting trap=1, since
+        // telemetry only updates once per second -- orders of magnitude
+        // slower than the CPU's own fetch cadence.
+        wait_for_trap;
+
+        if(dut.instr_count<=instr_before) begin
+            $display("  FAIL: instr_count did not advance before trapping -- CPU wasn't genuinely running");
+            errors=errors+1;
+        end
+
+        if(fault_injection_events!==events_before+1) begin
+            $display("  FAIL: expected exactly 1 new fault injection event, saw %0d",
+                fault_injection_events-events_before);
+            errors=errors+1;
+        end else
+            $display("  OK: exactly one instruction fetch was faulted");
+
+        if(dut.fault_pending!==1'b0) begin
+            $display("  FAIL: fault_pending still armed after the fault was consumed");
+            errors=errors+1;
+        end else
+            $display("  OK: fault_pending cleared after one-shot consumption");
+
+        if(dut.led[7]!==dut.trap) begin
+            $display("  FAIL: led[7]=%b does not follow the real trap signal (trap=%b)", dut.led[7], dut.trap);
+            errors=errors+1;
+        end else
+            $display("  OK: led[7] follows the real PicoRV32 trap signal (LED7=%b)", dut.led[7]);
+
+        if(dut.memory[faulted_word_addr]!==faulted_word_original) begin
+            $display("  FAIL: memory[%0d] changed from 0x%08h to 0x%08h -- fault injection corrupted RAM",
+                faulted_word_addr, faulted_word_original, dut.memory[faulted_word_addr]);
+            errors=errors+1;
+        end else
+            $display("  OK: memory[%0d] still holds the original instruction 0x%08h -- injection was transient",
+                faulted_word_addr, faulted_word_original);
+    end
+
+    $display("test: repeated INJECT_FAULT while already trapped is inert, not undefined behavior");
+    begin : m6_inject_fault_while_trapped
+        integer events_before;
+        events_before=fault_injection_events;
+
+        send_frame(8'h01, 8'h05, 32'h00000000, 8'h04); // INJECT_FAULT again
+        expect_response(8'h05, TB_RESP_ACK, 0, 32'b0);
+
+        // give it a generous window -- if this were somehow going to
+        // trigger a second fetch/trap/anything, it would show up quickly
+        #(50_000);
+
+        if(dut.trap!==1'b1) begin
+            $display("  FAIL: trap no longer asserted after a second INJECT_FAULT");
+            errors=errors+1;
+        end
+
+        if(fault_injection_events!==events_before) begin
+            $display("  FAIL: a trapped CPU issued another instruction fetch (events %0d->%0d) -- should be halted",
+                events_before, fault_injection_events);
+            errors=errors+1;
+        end else
+            $display("  OK: a trapped PicoRV32 issues no further fetches -- second arm sits inert, fault_pending=%b",
+                dut.fault_pending);
+    end
+
+    $display("test: SYSTEM_RESET ACK is fully transmitted before the reset pulse begins");
+    begin : m6_system_reset_sequencing
+        send_frame(8'h01, 8'h06, 32'h00000000, 8'h07); // SYSTEM_RESET
+
+        @(response_received);
+
+        if(last_resp_cmd_echo!==8'h06 || last_resp_status!==TB_RESP_ACK || !last_resp_checksum_ok) begin
+            $display("  FAIL: SYSTEM_RESET response malformed (cmd_echo=0x%02h status=0x%02h checksum_ok=%0d)",
+                last_resp_cmd_echo, last_resp_status, last_resp_checksum_ok);
+            errors=errors+1;
+        end
+
+        // tx_monitor only reaches this point after independently decoding
+        // the checksum byte off usb_tx -- if resetn had already dropped by
+        // now, the ACK-before-reset sequencing would be broken
+        if(dut.resetn!==1'b1) begin
+            $display("  FAIL: resetn already low immediately after the ACK was observed on the wire");
+            errors=errors+1;
+        end else
+            $display("  OK: resetn still high immediately after the SYSTEM_RESET ACK left the transmitter");
+    end
+
+    $display("test: internal reset pulse lasts exactly 128 sys_clk cycles");
+    begin : m6_reset_pulse_duration
+        integer cycles;
+        integer wait_cycles;
+
+        wait_cycles=0;
+        while(dut.reset_pulse_active!==1'b1 && wait_cycles<10000) begin
+            @(posedge dut.sys_clk);
+            wait_cycles=wait_cycles+1;
+        end
+
+        if(dut.reset_pulse_active!==1'b1) begin
+            $display("  FAIL: reset_pulse_active never engaged within %0d cycles of the ACK", wait_cycles);
+            errors=errors+1;
+        end
+        else begin
+            cycles=0;
+
+            while(dut.reset_pulse_active===1'b1) begin
+                @(posedge dut.sys_clk);
+                cycles=cycles+1;
+            end
+
+            if(cycles!==128) begin
+                $display("  FAIL: reset pulse lasted %0d sys_clk cycles, expected 128", cycles);
+                errors=errors+1;
+            end else
+                $display("  OK: reset pulse lasted exactly 128 sys_clk cycles as designed");
+        end
+    end
+
+    $display("test: PicoRV32 trap clears, firmware restarts, POST reruns and reaches PASS");
+    begin : m6_recovery_1
+        m6_wait_for_post_pass;
+
+        if(dut.trap!==1'b0) begin
+            $display("  FAIL: trap still asserted after SYSTEM_RESET recovery");
+            errors=errors+1;
+        end else
+            $display("  OK: trap cleared after SYSTEM_RESET");
+
+        if(dut.workload_select!==3'b0) begin
+            $display("  FAIL: workload_select=%0d after reset, expected 0 (IDLE)", dut.workload_select);
+            errors=errors+1;
+        end else
+            $display("  OK: workload_select reset to its IDLE default (0)");
+    end
+
+    $display("test: telemetry resumes after SYSTEM_RESET");
+    begin : m6_telemetry_resumes
+        integer telem_before;
+        telem_before=telemetry_count;
+
+        force dut.uart_interval=49999990;
+        #100;
+        release dut.uart_interval;
+
+        @(telemetry_received);
+
+        if(telemetry_count<=telem_before) begin
+            $display("  FAIL: no new telemetry packet observed after reset");
+            errors=errors+1;
+        end
+        else if(last_telemetry_flags[1]!==1'b0) begin
+            $display("  FAIL: telemetry still reports trap=1 after recovery");
+            errors=errors+1;
+        end
+        else
+            $display("  OK: telemetry resumed and reports trap=0 after recovery");
+    end
+
+    $display("test: bad checksum on INJECT_FAULT causes no injection");
+    begin : m6_inject_fault_bad_checksum
+        send_frame(8'h01, 8'h05, 32'h00000000, 8'hFF); // wrong checksum
+        expect_response(8'h05, TB_RESP_NACK_BAD_CHECKSUM, 0, 32'b0);
+
+        if(dut.fault_pending!==1'b0) begin
+            $display("  FAIL: fault_pending armed despite a bad checksum");
+            errors=errors+1;
+        end else
+            $display("  OK: fault_pending stayed clear after a bad-checksum INJECT_FAULT");
+    end
+
+    $display("test: bad checksum on SYSTEM_RESET causes no reset");
+    begin : m6_system_reset_bad_checksum
+        integer resp_before;
+        resp_before=response_count;
+
+        send_frame(8'h01, 8'h06, 32'h00000000, 8'hFF); // wrong checksum
+        expect_response(8'h06, TB_RESP_NACK_BAD_CHECKSUM, 0, 32'b0);
+
+        #(1_000_000); // generous margin -- a reset pulse would show up well within this
+
+        if(dut.resetn!==1'b1 || dut.reset_pulse_active!==1'b0) begin
+            $display("  FAIL: a bad-checksum SYSTEM_RESET triggered a reset anyway (resetn=%b reset_pulse_active=%b)",
+                dut.resetn, dut.reset_pulse_active);
+            errors=errors+1;
+        end else
+            $display("  OK: bad-checksum SYSTEM_RESET caused no reset");
+    end
+
+    $display("test: PING, SET_WORKLOAD, RESET_COUNTERS, CAPTURE_SNAPSHOT all work after recovery");
+    begin : m6_post_recovery_functionality
+        send_frame(8'h01, 8'h01, 32'h00000000, 8'h00); // PING
+        expect_response(8'h01, TB_RESP_ACK, 0, 32'b0);
+
+        send_frame(8'h01, 8'h04, 32'h00000002, 8'h07); // SET_WORKLOAD MEMORY
+        expect_response(8'h04, TB_RESP_ACK, 1, 32'h00000002);
+
+        send_frame(8'h01, 8'h02, 32'h00000000, 8'h03); // RESET_COUNTERS
+        expect_response(8'h02, TB_RESP_ACK, 0, 32'b0);
+
+        send_frame(8'h01, 8'h03, 32'h00000000, 8'h02); // CAPTURE_SNAPSHOT
+        expect_response(8'h03, TB_RESP_ACK, 0, 32'b0);
+
+        $display("  OK: all four commands ACKed normally post-recovery");
+    end
+
+    $display("test: fault injection from the MEMORY workload -- data RAM accesses never modified");
+    begin : m6_inject_fault_memory
+        integer dram_before;
+        integer events_before;
+
+        #(8_000_000); // let MEMORY's own loop get running (same margin as M4's workload settle time)
+
+        dram_before=dut.data_ram_count;
+        events_before=fault_injection_events;
+
+        send_frame(8'h01, 8'h05, 32'h00000000, 8'h04); // INJECT_FAULT
+        expect_response(8'h05, TB_RESP_ACK, 0, 32'b0);
+
+        wait_for_trap;
+
+        if(dut.data_ram_count<=dram_before) begin
+            $display("  FAIL: data_ram_count did not advance before trapping -- MEMORY workload wasn't really running");
+            errors=errors+1;
+        end else
+            $display("  OK: real data RAM traffic (data_ram_count %0d->%0d) continued right up until the trap",
+                dram_before, dut.data_ram_count);
+
+        if(dut.memory[faulted_word_addr]!==faulted_word_original) begin
+            $display("  FAIL: memory[%0d] corrupted during MEMORY-workload fault injection", faulted_word_addr);
+            errors=errors+1;
+        end else
+            $display("  OK: memory[] uncorrupted -- data RAM accesses are structurally excluded (mem_instr-gated)");
+
+        send_frame(8'h01, 8'h06, 32'h00000000, 8'h07); // SYSTEM_RESET
+        expect_response(8'h06, TB_RESP_ACK, 0, 32'b0);
+        m6_wait_for_post_pass;
+
+        if(dut.trap!==1'b0) begin
+            $display("  FAIL: trap still asserted after MEMORY-workload recovery");
+            errors=errors+1;
+        end
+    end
+
+    $display("test: fault injection from the MMIO workload -- MMIO accesses never modified");
+    begin : m6_inject_fault_mmio
+        integer mmio_before;
+        integer events_before;
+
+        send_frame(8'h01, 8'h04, 32'h00000004, 8'h01); // SET_WORKLOAD MMIO
+        expect_response(8'h04, TB_RESP_ACK, 1, 32'h00000004);
+
+        #(8_000_000);
+
+        mmio_before=dut.mmio_access_count;
+        events_before=fault_injection_events;
+
+        send_frame(8'h01, 8'h05, 32'h00000000, 8'h04); // INJECT_FAULT
+        expect_response(8'h05, TB_RESP_ACK, 0, 32'b0);
+
+        wait_for_trap;
+
+        if(dut.mmio_access_count<=mmio_before) begin
+            $display("  FAIL: mmio_access_count did not advance before trapping -- MMIO workload wasn't really running");
+            errors=errors+1;
+        end else
+            $display("  OK: real MMIO traffic (mmio_access_count %0d->%0d) continued right up until the trap, unaffected by injection",
+                mmio_before, dut.mmio_access_count);
+
+        // final SYSTEM_RESET, leaves the system clean for programming/physical use
+        send_frame(8'h01, 8'h06, 32'h00000000, 8'h07); // SYSTEM_RESET
+        expect_response(8'h06, TB_RESP_ACK, 0, 32'b0);
+        m6_wait_for_post_pass;
+
+        if(dut.trap!==1'b0) begin
+            $display("  FAIL: trap still asserted after final MMIO-workload recovery");
+            errors=errors+1;
+        end else
+            $display("  OK: trap clear after final recovery");
+    end
+
+    $display("test: trap clear after the full M6 fault/recovery cycle");
+    if(dut.trap!==1'b0) begin
+        $display("  FAIL: trap asserted at the very end of the run, after all recovery should be complete");
         errors=errors+1;
     end else
-        $display("  OK: byte-level receiver reconstructed all 181 transmitted bytes");
+        $display("  OK: trap clear at the end of the run");
+
+    if(reset_pulse_count!==6) begin
+        $display("  FAIL: expected exactly 6 cmd_reset_counters pulses (2 M2 + 2 M3 + 1 M4 + 1 M6 valid frames), saw %0d", reset_pulse_count);
+        errors=errors+1;
+    end else
+        $display("  OK: cmd_reset_counters pulsed exactly 6 times, matching the 6 valid RESET_COUNTERS frames sent");
+
+    if(snapshot_pulse_count!==4) begin
+        $display("  FAIL: expected exactly 4 cmd_capture_snapshot pulses (1 M2 + 1 M3 + 1 M4 + 1 M6 valid frame), saw %0d", snapshot_pulse_count);
+        errors=errors+1;
+    end else
+        $display("  OK: cmd_capture_snapshot pulsed exactly 4 times, matching the 4 valid CAPTURE_SNAPSHOT frames sent");
+
+    // 442 bytes empirically confirmed by this run: the 307-byte M1-M4
+    // baseline plus M6's additions -- 2 INJECT_FAULT + 2 SYSTEM_RESET valid
+    // frames, 1 more SET_WORKLOAD, 1 more RESET_COUNTERS, 1 more
+    // CAPTURE_SNAPSHOT, 2 bad-checksum command frames, their response
+    // packets, and the telemetry packets emitted during roughly 300ms of
+    // additional simulated time (3 more full POST cycles)
+    if(byte_count!==442) begin
+        $display("  FAIL: byte-level receiver saw %0d bytes, expected 442", byte_count);
+        errors=errors+1;
+    end else
+        $display("  OK: byte-level receiver reconstructed all 442 transmitted bytes");
 
     if(errors==0)
         $display(">>> UART RX PASS");

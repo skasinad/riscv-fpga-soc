@@ -5,7 +5,7 @@ PORT="/dev/cu.usbserial-FT4MG9OV1"
 BAUD=115200
 
 HEADER=b"\xA5\x5A"
-PAYLOAD_SIZE=22
+PAYLOAD_SIZE=27 # M4: version 0x02, +DATA_RAM_COUNT +WORKLOAD_ID
 
 
 def read_exact(ser,size):
@@ -37,10 +37,12 @@ with serial.Serial(PORT,BAUD,timeout=1) as ser:
         version=payload[0]
         flags=payload[1]
 
-        cycles,instructions,memory,mmio=struct.unpack(
-            "<QIII",
-            payload[2:]
+        cycles,instructions,memory,mmio,data_ram=struct.unpack(
+            "<QIIII",
+            payload[2:26]
         )
+
+        workload=payload[26]
 
         post_pass=bool(flags&0x01)
         trap=bool(flags&0x02)
@@ -50,6 +52,8 @@ with serial.Serial(PORT,BAUD,timeout=1) as ser:
             f"INS={instructions:>10}  "
             f"RAM={memory:>10}  "
             f"MMIO={mmio:>8}  "
+            f"DRAM={data_ram:>9}  "
+            f"WL={workload}  "
             f"POST={'PASS' if post_pass else 'FAIL'}  "
             f"TRAP={'YES' if trap else 'NO'}  "
             f"PROTO={version}"

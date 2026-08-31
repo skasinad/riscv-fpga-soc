@@ -77,6 +77,110 @@ h1 {
     color:var(--danger);
 }
 
+.control-panel {
+    display:flex;
+    flex-wrap:wrap;
+    padding:0;
+    margin-top:18px;
+}
+
+.control-block {
+    padding:14px 18px;
+    border-right:1px solid var(--line);
+}
+
+.control-block:last-child {
+    border-right:0;
+}
+
+.control-block:nth-child(1) {
+    flex:1 1 380px;
+}
+
+.control-block:nth-child(2) {
+    flex:0 0 auto;
+}
+
+.status-block {
+    flex:1 1 260px;
+}
+
+.btn-row {
+    display:flex;
+    flex-wrap:wrap;
+    gap:6px;
+}
+
+.workload-btn,
+.control-btn {
+    background:transparent;
+    border:1px solid var(--line);
+    color:var(--text);
+    font-family:inherit;
+    font-size:11px;
+    letter-spacing:0.4px;
+    padding:9px 12px;
+    cursor:pointer;
+}
+
+.workload-btn:hover:not(:disabled),
+.control-btn:hover:not(:disabled) {
+    border-color:var(--muted);
+}
+
+/* Active workload comes from telemetry (WORKLOAD_ID), not from the click
+   itself -- see dashboard.js. This is what actually lights up once the
+   FPGA confirms it, not the moment the button is pressed. */
+.workload-btn.active {
+    border-color:var(--accent);
+    color:var(--accent);
+}
+
+.workload-btn:disabled,
+.control-btn:disabled {
+    opacity:0.4;
+    cursor:default;
+}
+
+/* Restrained equivalent of a lab E-STOP button -- same neutral shape as
+   every other control, just a border/text tint from the existing danger
+   color so it isn't confused with normal workload/counter controls at a
+   glance. No flashing, no gradients. */
+.fault-btn {
+    border-color:var(--danger);
+    color:var(--danger);
+}
+
+.fault-btn:hover:not(:disabled) {
+    background:rgba(239,122,122,0.08);
+}
+
+.cmd-line {
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    min-height:24px;
+    font-size:11px;
+}
+
+.cmd-line span {
+    color:var(--muted);
+}
+
+.cmd-line strong {
+    font-size:11px;
+    font-weight:600;
+    font-variant-numeric:tabular-nums;
+}
+
+.cmd-line strong.ack {
+    color:var(--accent);
+}
+
+.cmd-line strong.nack {
+    color:var(--danger);
+}
+
 .layout {
     display:grid;
     grid-template-columns:360px 1fr;
@@ -222,6 +326,19 @@ footer {
 
     .status-strip {
         grid-template-columns:repeat(2,1fr);
+    }
+
+    .control-panel {
+        flex-direction:column;
+    }
+
+    .control-block {
+        border-right:0;
+        border-bottom:1px solid var(--line);
+    }
+
+    .control-block:last-child {
+        border-bottom:0;
     }
 
     .chart-panel {

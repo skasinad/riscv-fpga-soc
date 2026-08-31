@@ -37,6 +37,73 @@
         </header>
 
 
+        <section class="panel control-panel">
+
+            <div class="control-block">
+                <div class="panel-title">WORKLOAD</div>
+
+                <div class="btn-row" id="workload-row">
+                    <button class="workload-btn requires-running" data-workload="IDLE">IDLE</button>
+                    <button class="workload-btn requires-running" data-workload="ALU">ALU</button>
+                    <button class="workload-btn requires-running" data-workload="MEMORY">MEMORY</button>
+                    <button class="workload-btn requires-running" data-workload="BRANCH">BRANCH</button>
+                    <button class="workload-btn requires-running" data-workload="MMIO">MMIO</button>
+                    <button class="workload-btn requires-running" data-workload="MIXED">MIXED</button>
+                </div>
+            </div>
+
+            <div class="control-block">
+                <div class="panel-title">CONTROL</div>
+
+                <div class="btn-row">
+                    <button class="control-btn requires-running" id="reset-counters-btn">RESET COUNTERS</button>
+                    <button class="control-btn requires-running" id="snapshot-btn">CAPTURE SNAPSHOT</button>
+                </div>
+            </div>
+
+            <div class="control-block status-block">
+                <div class="panel-title">STATUS</div>
+
+                <div class="cmd-line">
+                    <span>ACTIVE</span>
+                    <strong id="active-workload">---</strong>
+                </div>
+
+                <div class="cmd-line">
+                    <span>CMD</span>
+                    <strong id="cmd-status">---</strong>
+                </div>
+
+                <div class="cmd-line">
+                    <span>LAST SNAPSHOT INSTR</span>
+                    <strong id="snapshot-instr">---</strong>
+                </div>
+            </div>
+
+        </section>
+
+
+        <section class="panel control-panel">
+
+            <div class="control-block">
+                <div class="panel-title">FAULT CONTROL</div>
+
+                <div class="btn-row">
+                    <button class="control-btn fault-btn requires-running" id="inject-fault-btn">INJECT ILLEGAL INSTRUCTION</button>
+                </div>
+            </div>
+
+            <div class="control-block">
+                <div class="panel-title">SYSTEM</div>
+
+                <div class="btn-row">
+                    <button class="control-btn" id="system-reset-btn">SYSTEM RESET</button>
+                </div>
+            </div>
+
+        </section>
+
+
         <section class="layout">
 
             <aside class="left-column">
@@ -85,6 +152,11 @@
                     </div>
 
                     <div class="metric-row">
+                        <span>DATA RAM ACCESS</span>
+                        <strong id="data-ram">0</strong>
+                    </div>
+
+                    <div class="metric-row">
                         <span>MMIO ACCESS</span>
                         <strong id="mmio">0</strong>
                     </div>
@@ -100,8 +172,13 @@
                     </div>
 
                     <div class="metric-row">
-                        <span>RAM / SEC</span>
+                        <span>RAM TOTAL / SEC</span>
                         <strong id="memory-rate">0</strong>
+                    </div>
+
+                    <div class="metric-row">
+                        <span>DATA RAM / SEC</span>
+                        <strong id="data-ram-rate">0</strong>
                     </div>
 
                     <div class="metric-row">
@@ -157,7 +234,7 @@
 
                     <div>
                         <span>FORMAT</span>
-                        <strong>BINARY V1</strong>
+                        <strong>BINARY V2</strong>
                     </div>
 
                     <div>
