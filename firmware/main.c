@@ -20,6 +20,13 @@
 #define ERR_TIMER       0x42
 #define ERR_DEBUG       0x44
 
+#define SNAP_CTRL       (*(volatile unsigned int *)0x10000020)
+#define SNAP_CYCLE_LO   (*(volatile unsigned int *)0x10000024)
+#define SNAP_CYCLE_HI   (*(volatile unsigned int *)0x10000028)
+#define SNAP_INSTR      (*(volatile unsigned int *)0x1000002C)
+#define SNAP_MEM        (*(volatile unsigned int *)0x10000030)
+#define SNAP_MMIO       (*(volatile unsigned int *)0x10000034)
+
 static void fault(unsigned int code)
 {
     GPIO_OUT=code;
@@ -48,6 +55,10 @@ int main(void)
     unsigned int instructions;
     unsigned int memory_accesses;
     unsigned int mmio_accesses;
+    unsigned int snap_cycle_lo;
+    unsigned int snap_instr;
+    unsigned int snap_mem;
+    unsigned int snap_mmio;
 
     GPIO_OUT=POST_RUNNING;
 
@@ -96,9 +107,26 @@ int main(void)
 
     if(mmio_accesses==0)
         fault(0x4A);
+    SNAP_CTRL=1;
 
-    //Short visible delay before final PASS state
-    delay_cycles(5000000);
+    snap_cycle_lo=SNAP_CYCLE_LO;
+    snap_instr=SNAP_INSTR;
+    snap_mem=SNAP_MEM;
+    snap_mmio=SNAP_MMIO;
+
+    if(snap_cycle_lo==0)
+        fault(0x4B);
+
+    if(snap_instr==0)
+        fault(0x4C);
+
+    if(snap_mem==0)
+        fault(0x4D);
+
+    if(snap_mmio==0)
+        fault(0x4E);
+        //Short visible delay before final PASS state
+        delay_cycles(5000000);
 
     GPIO_OUT=POST_PASS;
 

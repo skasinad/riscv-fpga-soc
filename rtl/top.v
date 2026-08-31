@@ -72,9 +72,16 @@ localparam SYS_STATUS_ADDR   = 32'h10000004;
 localparam CYCLE_COUNT_LO    = 32'h10000008;
 localparam CYCLE_COUNT_HI    = 32'h1000000C;
 localparam DEBUG_CTRL_ADDR   = 32'h10000010;
-localparam INSTR_COUNT_ADDR  = 32'h10000014;
-localparam MEM_COUNT_ADDR    = 32'h10000018;
-localparam MMIO_COUNT_ADDR   = 32'h1000001C;
+localparam INSTR_COUNT_ADDR   = 32'h10000014;
+localparam MEM_COUNT_ADDR     = 32'h10000018;
+localparam MMIO_COUNT_ADDR    = 32'h1000001C;
+
+localparam SNAP_CTRL_ADDR     = 32'h10000020;
+localparam SNAP_CYCLE_LO_ADDR = 32'h10000024;
+localparam SNAP_CYCLE_HI_ADDR = 32'h10000028;
+localparam SNAP_INSTR_ADDR    = 32'h1000002C;
+localparam SNAP_MEM_ADDR      = 32'h10000030;
+localparam SNAP_MMIO_ADDR     = 32'h10000034;
 
 localparam MMIO_BASE = GPIO_OUT_ADDR;
 localparam MMIO_TOP  = DEBUG_CTRL_ADDR;
@@ -87,12 +94,17 @@ reg [31:0] instr_count=0;
 reg [31:0] mem_access_count=0;
 reg [31:0] mmio_access_count=0;
 
+reg [63:0] snap_cycle_count=0;
+reg [31:0] snap_instr_count=0;
+reg [31:0] snap_mem_count=0;
+reg [31:0] snap_mmio_count=0;
+
 wire mmio_select;
 
 assign mmio_select =
     mem_valid &&
     (mem_addr>=32'h10000000) &&
-    (mem_addr<=32'h1000001C);
+    (mem_addr<=32'h10000034);
 
 
 // Synchronous RAM
@@ -228,7 +240,43 @@ begin
             begin
                 mmio_rdata<=mmio_access_count;
             end
+            SNAP_CTRL_ADDR:
+            begin
+                if(mem_wstrb!=0 && mem_wdata[0])
+                begin
+                    snap_cycle_count<=cycle_counter;
+                    snap_instr_count<=instr_count;
+                    snap_mem_count<=mem_access_count;
+                    snap_mmio_count<=mmio_access_count;
+                end
 
+                mmio_rdata<=32'b0;
+            end
+
+            SNAP_CYCLE_LO_ADDR:
+            begin
+                mmio_rdata<=snap_cycle_count[31:0];
+            end
+
+            SNAP_CYCLE_HI_ADDR:
+            begin
+                mmio_rdata<=snap_cycle_count[63:32];
+            end
+
+            SNAP_INSTR_ADDR:
+            begin
+                mmio_rdata<=snap_instr_count;
+            end
+
+            SNAP_MEM_ADDR:
+            begin
+                mmio_rdata<=snap_mem_count;
+            end
+
+            SNAP_MMIO_ADDR:
+            begin
+                mmio_rdata<=snap_mmio_count;
+            end
             default:
                 mmio_rdata<=32'b0;
 
