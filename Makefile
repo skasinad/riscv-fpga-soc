@@ -33,6 +33,7 @@ synth: firmware
 	yosys -p "synth_ice40 -top top -json $(BUILD)/soc.json" \
     	$(RTL)/core/picorv32.v \
     	$(RTL)/uart_tx.v \
+    	$(RTL)/uart_rx.v \
     	$(RTL)/top.v
 
 pnr: synth

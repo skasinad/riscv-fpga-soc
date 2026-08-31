@@ -1,7 +1,8 @@
 module top(
     input wire clk,
     output wire [7:0] led,
-    output wire usb_tx
+    output wire usb_tx,
+    input wire usb_rx
 );
 
 // Clock divider
@@ -105,7 +106,7 @@ reg uart_start=0;
 wire uart_busy;
 wire uart_tx_line;
 
-reg [4:0] uart_state=0;
+reg [5:0] uart_state=0; // widened from [4:0] in M3: response states run 26-35
 reg [25:0] uart_interval=0;
 
 reg [63:0] uart_cycle_snapshot=0;
@@ -113,6 +114,99 @@ reg [31:0] uart_instr_snapshot=0;
 reg [31:0] uart_mem_snapshot=0;
 reg [31:0] uart_mmio_snapshot=0;
 reg [7:0] uart_flags_snapshot=0;
+
+// One cycle behind resp_pending on purpose: cmd_capture_snapshot and
+// snap_instr_count updating are themselves a cycle apart (pulse fires,
+// then the MMIO-ack block's sibling if writes the register the cycle
+// after). Without this delay an idle arbiter can commit and latch
+// resp_data_value in that same window, one cycle before snap_instr_count
+// has actually taken on the fresh value -- reporting stale data.
+reg resp_pending_d1=0;
+
+// Response fields latched at the moment the arbiter commits to sending,
+// so the byte-send sequence below has a stable snapshot even if the RX
+// side classifies a new command mid-transmission.
+reg resp_consumed=0;
+reg [7:0] resp_tx_cmd_echo=0;
+reg [7:0] resp_tx_status=0;
+reg [31:0] resp_tx_data=0;
+reg [7:0] resp_tx_checksum=0;
+
+// CAPTURE_SNAPSHOT is the only command with a meaningful result value;
+// everything else reports 0 in DATA
+wire [31:0] resp_data_value =
+    (resp_cmd_echo==CMD_CAPTURE_SNAPSHOT && resp_status==RESP_ACK) ? snap_instr_count : 32'b0;
+
+wire [7:0] resp_checksum_value =
+    CMD_PROTO_VER ^ resp_cmd_echo ^ resp_status ^
+    resp_data_value[7:0] ^ resp_data_value[15:8] ^ resp_data_value[23:16] ^ resp_data_value[31:24];
+
+// Host command receiver. MAGIC(2) VERSION(1) CMD(1) ARG(4, little-endian)
+// CHECKSUM(1). Checksum is XOR of VERSION,CMD,ARG[0..3] -- magic bytes
+// aren't included, they're the framing signal, not payload.
+localparam CMD_MAGIC0    = 8'hA5;
+localparam CMD_MAGIC1    = 8'h5A;
+localparam CMD_PROTO_VER = 8'h01;
+localparam CMD_PING             = 8'h01;
+localparam CMD_RESET_COUNTERS   = 8'h02;
+localparam CMD_CAPTURE_SNAPSHOT = 8'h03;
+
+// Response packet: MAGIC0 MAGIC1 VERSION CMD_ECHO STATUS DATA[0..3] CHECKSUM.
+// Same checksum convention as the command frame. MAGIC1 is 0x5B, not the
+// telemetry stream's 0x5A -- both ride usb_tx, so the host needs to tell
+// them apart from the first two bytes without waiting for more.
+localparam RESP_MAGIC0 = 8'hA5;
+localparam RESP_MAGIC1 = 8'h5B;
+
+localparam RESP_ACK               = 8'h00;
+localparam RESP_NACK_BAD_CHECKSUM = 8'h01;
+localparam RESP_NACK_BAD_VERSION  = 8'h02;
+localparam RESP_NACK_UNKNOWN_CMD  = 8'h03;
+
+localparam RX_IDLE     = 0;
+localparam RX_MAGIC1   = 1;
+localparam RX_VERSION  = 2;
+localparam RX_CMDID    = 3;
+localparam RX_ARG0     = 4;
+localparam RX_ARG1     = 5;
+localparam RX_ARG2     = 6;
+localparam RX_ARG3     = 7;
+localparam RX_CHECKSUM = 8;
+
+// 20000 cycles = 400us @ 50 MHz, ~4.6 byte times -- generous margin over
+// host-side scheduling jitter between bytes of the same frame without
+// taking long to resync if a transfer genuinely stalls mid-frame
+localparam CMD_TIMEOUT_CYCLES = 20000;
+
+wire [7:0] rx_data;
+wire rx_valid;
+
+reg [3:0] cmd_state=0;
+reg [7:0] cmd_id=0;
+reg [31:0] cmd_arg=0;
+reg [7:0] cmd_checksum_calc=0;
+reg [14:0] cmd_timeout=0;
+
+reg cmd_ping_seen=0;
+reg cmd_reset_counters=0;
+reg cmd_capture_snapshot=0;
+
+// SNAP_* only exists on the CPU's MMIO bus, and cmd_snapshot_seen predates
+// M3's response packets -- kept as-is since it's already dashboard/M1/M2
+// compatible and cheap to leave in place.
+reg cmd_snapshot_seen=0;
+
+// One outstanding response at a time: the RX parser latches what to send
+// here, the TX arbiter drains it whenever the line is free. If a second
+// valid frame classifies before the first response has started sending,
+// it overwrites resp_cmd_echo/resp_status and the first response is lost
+// (its command side effect already happened and is NOT re-run or lost --
+// only the acknowledgment of it is). Host commands are expected to be
+// serialized (wait for a response before sending the next one); a deeper
+// queue isn't justified for that usage pattern.
+reg resp_pending=0;
+reg [7:0] resp_cmd_echo=0;
+reg [7:0] resp_status=0;
 
 wire mmio_select;
 
@@ -165,6 +259,17 @@ always @(posedge sys_clk)
 begin
     if(!resetn)
     begin
+        instr_count<=0;
+        mem_access_count<=0;
+        mmio_access_count<=0;
+    end
+    else if(cmd_reset_counters)
+    begin
+        // host reset wins over a same-cycle bus event so each RESET_COUNTERS
+        // establishes a clean measurement boundary instead of racing whatever
+        // the CPU happened to be doing that cycle. cycle_counter is left
+        // alone -- it's system uptime, not an experiment counter, and POST's
+        // own delay_cycles() already depends on it being monotonic.
         instr_count<=0;
         mem_access_count<=0;
         mmio_access_count<=0;
@@ -297,6 +402,19 @@ begin
 
         endcase
     end
+
+    // Reuses the exact SNAP_* registers the firmware-triggered SNAP_CTRL
+    // write above uses, so a host-captured snapshot and a firmware-captured
+    // one have identical coherence semantics -- not a second snapshot path.
+    // If both triggers land on the same cycle they'd write identical values
+    // anyway (same source counters), so no arbitration is needed here.
+    if(cmd_capture_snapshot)
+    begin
+        snap_cycle_count<=cycle_counter;
+        snap_instr_count<=instr_count;
+        snap_mem_count<=mem_access_count;
+        snap_mmio_count<=mmio_access_count;
+    end
 end
 
 
@@ -393,6 +511,8 @@ assign usb_tx=uart_tx_line;
 always @(posedge sys_clk)
 begin
     uart_start<=0;
+    resp_consumed<=0;
+    resp_pending_d1<=resp_pending;
 
     if(!resetn)
     begin
@@ -401,7 +521,22 @@ begin
     end
     else if(uart_state==0)
     begin
-        if(uart_interval==49999999)
+        // Responses jump ahead of a new telemetry packet -- the host is
+        // actively waiting on one, telemetry is a free-running background
+        // stream that can absorb the delay. uart_interval keeps counting
+        // through the whole thing since it only advances here at uart_state==0,
+        // same as it already pauses during an ordinary telemetry send.
+        if(resp_pending_d1)
+        begin
+            resp_consumed<=1;
+            resp_tx_cmd_echo<=resp_cmd_echo;
+            resp_tx_status<=resp_status;
+            resp_tx_data<=resp_data_value;
+            resp_tx_checksum<=resp_checksum_value;
+
+            uart_state<=26;
+        end
+        else if(uart_interval==49999999)
         begin
             uart_interval<=0;
 
@@ -411,7 +546,9 @@ begin
             uart_mmio_snapshot<=mmio_access_count;
 
             uart_flags_snapshot<={
-                6'b0,
+                4'b0,
+                cmd_snapshot_seen,
+                cmd_ping_seen,
                 trap,
                 (gpio_out[5:0]==6'h3F)
             };
@@ -464,9 +601,187 @@ begin
             //Wait for the next reporting interval
             25: uart_state<=0;
 
+            //Response header
+            26: begin uart_data<=RESP_MAGIC0;      uart_start<=1; uart_state<=27; end
+            27: begin uart_data<=RESP_MAGIC1;      uart_start<=1; uart_state<=28; end
+            28: begin uart_data<=CMD_PROTO_VER;    uart_start<=1; uart_state<=29; end
+            29: begin uart_data<=resp_tx_cmd_echo; uart_start<=1; uart_state<=30; end
+            30: begin uart_data<=resp_tx_status;   uart_start<=1; uart_state<=31; end
+
+            //32-bit result, little endian (0 unless CAPTURE_SNAPSHOT ACK)
+            31: begin uart_data<=resp_tx_data[7:0];   uart_start<=1; uart_state<=32; end
+            32: begin uart_data<=resp_tx_data[15:8];  uart_start<=1; uart_state<=33; end
+            33: begin uart_data<=resp_tx_data[23:16]; uart_start<=1; uart_state<=34; end
+            34: begin uart_data<=resp_tx_data[31:24]; uart_start<=1; uart_state<=35; end
+
+            35: begin uart_data<=resp_tx_checksum; uart_start<=1; uart_state<=0; end
+
             default: uart_state<=0;
 
         endcase
+    end
+end
+
+uart_rx #(
+    .CLK_FREQ(50000000),
+    .BAUD(115200)
+) uart_rx0 (
+    .clk(sys_clk),
+    .resetn(resetn),
+    .rx(usb_rx),
+    .data(rx_data),
+    .valid(rx_valid)
+);
+
+// A malformed or partial frame must never produce a command side effect --
+// any magic/version/checksum mismatch just drops back to RX_IDLE and waits
+// for the next 0xA5. Only a fully verified frame reaches RX_CHECKSUM's
+// dispatch. Unrecognized-but-valid command IDs are accepted and silently
+// ignored, not treated as an error.
+always @(posedge sys_clk)
+begin
+    // command pulses default low every cycle so one received frame can't
+    // retrigger its side effect on a later cycle where nothing arrived
+    cmd_reset_counters<=0;
+    cmd_capture_snapshot<=0;
+
+    if(!resetn)
+    begin
+        cmd_state<=RX_IDLE;
+        cmd_timeout<=0;
+        cmd_ping_seen<=0;
+        cmd_snapshot_seen<=0;
+        resp_pending<=0;
+    end
+    else begin
+
+    // Cleared here by default once the arbiter has drained it; overridden
+    // below (later in program order, so it wins) if a new frame classifies
+    // on the exact same cycle -- a fresh command's response is never
+    // dropped just because the previous one's bookkeeping finished first.
+    if(resp_consumed)
+        resp_pending<=0;
+
+    if(rx_valid)
+    begin
+        cmd_timeout<=0;
+
+        case(cmd_state)
+
+            RX_IDLE:
+                if(rx_data==CMD_MAGIC0)
+                    cmd_state<=RX_MAGIC1;
+
+            RX_MAGIC1:
+                cmd_state<=(rx_data==CMD_MAGIC1) ? RX_VERSION : RX_IDLE;
+
+            RX_VERSION:
+            begin
+                if(rx_data==CMD_PROTO_VER)
+                begin
+                    cmd_checksum_calc<=rx_data;
+                    cmd_state<=RX_CMDID;
+                end
+                else
+                begin
+                    // no CMD byte has been read yet at this point in the
+                    // frame, so there's nothing real to echo
+                    resp_pending<=1;
+                    resp_cmd_echo<=8'h00;
+                    resp_status<=RESP_NACK_BAD_VERSION;
+                    cmd_state<=RX_IDLE;
+                end
+            end
+
+            RX_CMDID:
+            begin
+                cmd_id<=rx_data;
+                cmd_checksum_calc<=cmd_checksum_calc^rx_data;
+                cmd_state<=RX_ARG0;
+            end
+
+            RX_ARG0:
+            begin
+                cmd_arg[7:0]<=rx_data;
+                cmd_checksum_calc<=cmd_checksum_calc^rx_data;
+                cmd_state<=RX_ARG1;
+            end
+
+            RX_ARG1:
+            begin
+                cmd_arg[15:8]<=rx_data;
+                cmd_checksum_calc<=cmd_checksum_calc^rx_data;
+                cmd_state<=RX_ARG2;
+            end
+
+            RX_ARG2:
+            begin
+                cmd_arg[23:16]<=rx_data;
+                cmd_checksum_calc<=cmd_checksum_calc^rx_data;
+                cmd_state<=RX_ARG3;
+            end
+
+            RX_ARG3:
+            begin
+                cmd_arg[31:24]<=rx_data;
+                cmd_checksum_calc<=cmd_checksum_calc^rx_data;
+                cmd_state<=RX_CHECKSUM;
+            end
+
+            RX_CHECKSUM:
+            begin
+                // the CMD byte was received either way -- echo it even on
+                // a checksum failure, it's useful diagnostic information
+                // even though it isn't guaranteed to be the byte the host
+                // actually intended if the corruption was elsewhere
+                resp_pending<=1;
+                resp_cmd_echo<=cmd_id;
+
+                if(rx_data==cmd_checksum_calc)
+                begin
+                    case(cmd_id)
+                        CMD_PING:
+                        begin
+                            cmd_ping_seen<=1;
+                            resp_status<=RESP_ACK;
+                        end
+
+                        CMD_RESET_COUNTERS:
+                        begin
+                            cmd_reset_counters<=1;
+                            resp_status<=RESP_ACK;
+                        end
+
+                        CMD_CAPTURE_SNAPSHOT:
+                        begin
+                            cmd_capture_snapshot<=1;
+                            cmd_snapshot_seen<=1;
+                            resp_status<=RESP_ACK;
+                        end
+
+                        default:
+                            resp_status<=RESP_NACK_UNKNOWN_CMD;
+                    endcase
+                end
+                else
+                    resp_status<=RESP_NACK_BAD_CHECKSUM;
+
+                cmd_state<=RX_IDLE;
+            end
+
+            default:
+                cmd_state<=RX_IDLE;
+
+        endcase
+    end
+    else if(cmd_state!=RX_IDLE)
+    begin
+        if(cmd_timeout==CMD_TIMEOUT_CYCLES-1)
+            cmd_state<=RX_IDLE;
+        else
+            cmd_timeout<=cmd_timeout+1;
+    end
+
     end
 end
 
