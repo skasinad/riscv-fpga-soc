@@ -31,8 +31,9 @@ firmware:
 synth: firmware
 	mkdir -p $(BUILD)
 	yosys -p "synth_ice40 -top top -json $(BUILD)/soc.json" \
-		$(RTL)/core/picorv32.v \
-		$(RTL)/top.v
+    	$(RTL)/core/picorv32.v \
+    	$(RTL)/uart_tx.v \
+    	$(RTL)/top.v
 
 pnr: synth
 	nextpnr-ice40 \

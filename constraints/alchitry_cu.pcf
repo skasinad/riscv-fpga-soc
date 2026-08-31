@@ -14,3 +14,4 @@ set_io led[4] L12
 set_io led[5] L14
 set_io led[6] M12
 set_io led[7] N14
+set_io usb_tx M9

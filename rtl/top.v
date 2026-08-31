@@ -1,6 +1,7 @@
 module top(
     input wire clk,
-    output wire [7:0] led
+    output wire [7:0] led,
+    output wire usb_tx
 );
 
 // Clock divider
@@ -98,6 +99,20 @@ reg [63:0] snap_cycle_count=0;
 reg [31:0] snap_instr_count=0;
 reg [31:0] snap_mem_count=0;
 reg [31:0] snap_mmio_count=0;
+
+reg [7:0] uart_data=0;
+reg uart_start=0;
+wire uart_busy;
+wire uart_tx_line;
+
+reg [4:0] uart_state=0;
+reg [25:0] uart_interval=0;
+
+reg [63:0] uart_cycle_snapshot=0;
+reg [31:0] uart_instr_snapshot=0;
+reg [31:0] uart_mem_snapshot=0;
+reg [31:0] uart_mmio_snapshot=0;
+reg [7:0] uart_flags_snapshot=0;
 
 wire mmio_select;
 
@@ -360,5 +375,99 @@ picorv32 #(
 
     .irq(32'b0)
 );
+
+uart_tx #(
+    .CLK_FREQ(50000000),
+    .BAUD(115200)
+) uart0 (
+    .clk(sys_clk),
+    .resetn(resetn),
+    .start(uart_start),
+    .data(uart_data),
+    .tx(uart_tx_line),
+    .busy(uart_busy)
+);
+
+assign usb_tx=uart_tx_line;
+
+always @(posedge sys_clk)
+begin
+    uart_start<=0;
+
+    if(!resetn)
+    begin
+        uart_state<=0;
+        uart_interval<=0;
+    end
+    else if(uart_state==0)
+    begin
+        if(uart_interval==49999999)
+        begin
+            uart_interval<=0;
+
+            uart_cycle_snapshot<=cycle_counter;
+            uart_instr_snapshot<=instr_count;
+            uart_mem_snapshot<=mem_access_count;
+            uart_mmio_snapshot<=mmio_access_count;
+
+            uart_flags_snapshot<={
+                6'b0,
+                trap,
+                (gpio_out[5:0]==6'h3F)
+            };
+
+            uart_state<=1;
+        end
+        else
+        begin
+            uart_interval<=uart_interval+1;
+        end
+    end
+    else if(!uart_busy&&!uart_start)
+    begin
+        case(uart_state)
+
+            //Packet header
+            1:  begin uart_data<=8'hA5; uart_start<=1; uart_state<=2;  end
+            2:  begin uart_data<=8'h5A; uart_start<=1; uart_state<=3;  end
+            3:  begin uart_data<=8'h01; uart_start<=1; uart_state<=4;  end
+            4:  begin uart_data<=uart_flags_snapshot; uart_start<=1; uart_state<=5; end
+
+            //64-bit cycle counter, little endian
+            5:  begin uart_data<=uart_cycle_snapshot[7:0];   uart_start<=1; uart_state<=6;  end
+            6:  begin uart_data<=uart_cycle_snapshot[15:8];  uart_start<=1; uart_state<=7;  end
+            7:  begin uart_data<=uart_cycle_snapshot[23:16]; uart_start<=1; uart_state<=8;  end
+            8:  begin uart_data<=uart_cycle_snapshot[31:24]; uart_start<=1; uart_state<=9;  end
+            9:  begin uart_data<=uart_cycle_snapshot[39:32]; uart_start<=1; uart_state<=10; end
+            10: begin uart_data<=uart_cycle_snapshot[47:40]; uart_start<=1; uart_state<=11; end
+            11: begin uart_data<=uart_cycle_snapshot[55:48]; uart_start<=1; uart_state<=12; end
+            12: begin uart_data<=uart_cycle_snapshot[63:56]; uart_start<=1; uart_state<=13; end
+
+            //Instruction counter
+            13: begin uart_data<=uart_instr_snapshot[7:0];   uart_start<=1; uart_state<=14; end
+            14: begin uart_data<=uart_instr_snapshot[15:8];  uart_start<=1; uart_state<=15; end
+            15: begin uart_data<=uart_instr_snapshot[23:16]; uart_start<=1; uart_state<=16; end
+            16: begin uart_data<=uart_instr_snapshot[31:24]; uart_start<=1; uart_state<=17; end
+
+            //RAM access counter
+            17: begin uart_data<=uart_mem_snapshot[7:0];   uart_start<=1; uart_state<=18; end
+            18: begin uart_data<=uart_mem_snapshot[15:8];  uart_start<=1; uart_state<=19; end
+            19: begin uart_data<=uart_mem_snapshot[23:16]; uart_start<=1; uart_state<=20; end
+            20: begin uart_data<=uart_mem_snapshot[31:24]; uart_start<=1; uart_state<=21; end
+
+            //MMIO access counter
+            21: begin uart_data<=uart_mmio_snapshot[7:0];   uart_start<=1; uart_state<=22; end
+            22: begin uart_data<=uart_mmio_snapshot[15:8];  uart_start<=1; uart_state<=23; end
+            23: begin uart_data<=uart_mmio_snapshot[23:16]; uart_start<=1; uart_state<=24; end
+            24: begin uart_data<=uart_mmio_snapshot[31:24]; uart_start<=1; uart_state<=25; end
+
+            //Wait for the next reporting interval
+            25: uart_state<=0;
+
+            default: uart_state<=0;
+
+        endcase
+    end
+end
 
 endmodule
