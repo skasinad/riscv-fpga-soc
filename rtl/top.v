@@ -72,6 +72,9 @@ localparam SYS_STATUS_ADDR   = 32'h10000004;
 localparam CYCLE_COUNT_LO    = 32'h10000008;
 localparam CYCLE_COUNT_HI    = 32'h1000000C;
 localparam DEBUG_CTRL_ADDR   = 32'h10000010;
+localparam INSTR_COUNT_ADDR  = 32'h10000014;
+localparam MEM_COUNT_ADDR    = 32'h10000018;
+localparam MMIO_COUNT_ADDR   = 32'h1000001C;
 
 localparam MMIO_BASE = GPIO_OUT_ADDR;
 localparam MMIO_TOP  = DEBUG_CTRL_ADDR;
@@ -80,12 +83,16 @@ reg [7:0] gpio_out=0;
 reg [31:0] debug_ctrl=0;
 reg [63:0] cycle_counter=0;
 
+reg [31:0] instr_count=0;
+reg [31:0] mem_access_count=0;
+reg [31:0] mmio_access_count=0;
+
 wire mmio_select;
 
 assign mmio_select =
     mem_valid &&
-    (mem_addr>=MMIO_BASE) &&
-    (mem_addr<=MMIO_TOP);
+    (mem_addr>=32'h10000000) &&
+    (mem_addr<=32'h1000001C);
 
 
 // Synchronous RAM
@@ -124,6 +131,28 @@ begin
         cycle_counter<=0;
     else
         cycle_counter<=cycle_counter+1;
+end
+
+//Execution monitor
+always @(posedge sys_clk)
+begin
+    if(!resetn)
+    begin
+        instr_count<=0;
+        mem_access_count<=0;
+        mmio_access_count<=0;
+    end
+    else
+    begin
+        if(mem_valid&&mem_ready&&mem_instr)
+            instr_count<=instr_count+1;
+
+        if(mem_valid&&mem_ready&&ram_ready)
+            mem_access_count<=mem_access_count+1;
+
+        if(mem_valid&&mem_ready&&mmio_select)
+            mmio_access_count<=mmio_access_count+1;
+    end
 end
 
 
@@ -183,6 +212,21 @@ begin
                     debug_ctrl<=mem_wdata;
 
                 mmio_rdata<=debug_ctrl;
+            end
+
+            INSTR_COUNT_ADDR:
+            begin
+                mmio_rdata<=instr_count;
+            end
+
+            MEM_COUNT_ADDR:
+            begin
+                mmio_rdata<=mem_access_count;
+            end
+
+            MMIO_COUNT_ADDR:
+            begin
+                mmio_rdata<=mmio_access_count;
             end
 
             default:

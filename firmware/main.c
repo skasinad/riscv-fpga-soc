@@ -3,6 +3,9 @@
 #define CYCLE_COUNT_LO  (*(volatile unsigned int *)0x10000008)
 #define CYCLE_COUNT_HI  (*(volatile unsigned int *)0x1000000C)
 #define DEBUG_CTRL      (*(volatile unsigned int *)0x10000010)
+#define INSTR_COUNT     (*(volatile unsigned int *)0x10000014)
+#define MEM_COUNT       (*(volatile unsigned int *)0x10000018)
+#define MMIO_COUNT      (*(volatile unsigned int *)0x1000001C)
 
 #define POST_RUNNING    0x01
 #define POST_GPIO_OK    0x02
@@ -42,6 +45,10 @@ int main(void)
     unsigned int end;
     unsigned int debug_value;
 
+    unsigned int instructions;
+    unsigned int memory_accesses;
+    unsigned int mmio_accesses;
+
     GPIO_OUT=POST_RUNNING;
 
     //GPIO write path is working if execution reaches here
@@ -75,6 +82,20 @@ int main(void)
         fault(ERR_DEBUG);
 
     GPIO_OUT=POST_DEBUG_OK;
+
+    //Execution monitor test
+    instructions=INSTR_COUNT;
+    memory_accesses=MEM_COUNT;
+    mmio_accesses=MMIO_COUNT;
+
+    if(instructions==0)
+        fault(0x48);
+
+    if(memory_accesses==0)
+        fault(0x49);
+
+    if(mmio_accesses==0)
+        fault(0x4A);
 
     //Short visible delay before final PASS state
     delay_cycles(5000000);

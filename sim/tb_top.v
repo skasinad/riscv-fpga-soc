@@ -41,11 +41,17 @@ initial begin
 
         if (dut.gpio_out == 8'h3F) begin
             $display(">>> POST_PASS (gpio_out=0x3F) at t=%0t", $time);
+            $display("    instr_count=%0d mem_access_count=%0d mmio_access_count=%0d",
+                dut.instr_count, dut.mem_access_count, dut.mmio_access_count);
+            if (dut.instr_count == 0 || dut.mem_access_count == 0 || dut.mmio_access_count == 0)
+                $display(">>> WARNING: POST passed but an execution-monitor counter read 0 in sim");
             $finish;
         end
 
         if (dut.gpio_out[6]) begin
             $display(">>> POST fault, gpio_out=%02h at t=%0t", dut.gpio_out, $time);
+            $display("    instr_count=%0d mem_access_count=%0d mmio_access_count=%0d",
+                dut.instr_count, dut.mem_access_count, dut.mmio_access_count);
             $finish;
         end
     end
