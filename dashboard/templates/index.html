@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>RISC-V FPGA Monitor</title>
+
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static',filename='style.css') }}"
+    >
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+
+<body>
+
+    <main class="shell">
+
+        <header class="topbar">
+            <div>
+                <div class="kicker">ALCHITRY CU / ICE40 HX8K</div>
+                <h1>RISC-V FPGA MONITOR</h1>
+                <div class="subhead">Live hardware execution telemetry</div>
+            </div>
+
+            <div class="link-block">
+                <div>UART 115200</div>
+                <div id="connection" class="link-state disconnected">
+                    DISCONNECTED
+                </div>
+            </div>
+        </header>
+
+
+        <section class="layout">
+
+            <aside class="left-column">
+
+                <section class="panel">
+                    <div class="panel-title">SYSTEM</div>
+
+                    <div class="kv-row">
+                        <span>CORE</span>
+                        <strong>PicoRV32 / RV32I</strong>
+                    </div>
+
+                    <div class="kv-row">
+                        <span>CLOCK</span>
+                        <strong>50.000 MHz</strong>
+                    </div>
+
+                    <div class="kv-row">
+                        <span>POST</span>
+                        <strong id="post">---</strong>
+                    </div>
+
+                    <div class="kv-row">
+                        <span>TRAP</span>
+                        <strong id="trap">---</strong>
+                    </div>
+                </section>
+
+
+                <section class="panel">
+                    <div class="panel-title">COUNTERS</div>
+
+                    <div class="metric-row">
+                        <span>CYCLES</span>
+                        <strong id="cycles">0</strong>
+                    </div>
+
+                    <div class="metric-row">
+                        <span>INSTRUCTIONS</span>
+                        <strong id="instructions">0</strong>
+                    </div>
+
+                    <div class="metric-row">
+                        <span>RAM ACCESS</span>
+                        <strong id="memory">0</strong>
+                    </div>
+
+                    <div class="metric-row">
+                        <span>MMIO ACCESS</span>
+                        <strong id="mmio">0</strong>
+                    </div>
+                </section>
+
+
+                <section class="panel">
+                    <div class="panel-title">RATES</div>
+
+                    <div class="metric-row">
+                        <span>INSTR / SEC</span>
+                        <strong id="instruction-rate">0</strong>
+                    </div>
+
+                    <div class="metric-row">
+                        <span>RAM / SEC</span>
+                        <strong id="memory-rate">0</strong>
+                    </div>
+
+                    <div class="metric-row">
+                        <span>MMIO / SEC</span>
+                        <strong id="mmio-rate">0</strong>
+                    </div>
+
+                    <div class="metric-row">
+                        <span>CYCLES / INSTR</span>
+                        <strong id="cpi">0.00</strong>
+                    </div>
+                </section>
+
+            </aside>
+
+
+            <section class="right-column">
+
+                <section class="panel chart-panel">
+
+                    <div class="chart-header">
+                        <div>
+                            <div class="panel-title">LIVE ACTIVITY</div>
+                            <div class="chart-subtitle">
+                                Hardware event rate sampled from the FPGA
+                            </div>
+                        </div>
+
+                        <div class="packet-counter">
+                            PACKETS
+                            <strong id="packets">0</strong>
+                        </div>
+                    </div>
+
+                    <div class="chart-container">
+                        <canvas id="activityChart"></canvas>
+                    </div>
+
+                </section>
+
+
+                <section class="panel status-strip">
+
+                    <div>
+                        <span>TRANSPORT</span>
+                        <strong>FTDI / USB-C</strong>
+                    </div>
+
+                    <div>
+                        <span>TELEMETRY</span>
+                        <strong>HW COUNTERS</strong>
+                    </div>
+
+                    <div>
+                        <span>FORMAT</span>
+                        <strong>BINARY V1</strong>
+                    </div>
+
+                    <div>
+                        <span>HOST</span>
+                        <strong>MACOS</strong>
+                    </div>
+
+                </section>
+
+            </section>
+
+        </section>
+
+
+        <footer>
+            FPGA counters → UART → USB → Python → Flask
+        </footer>
+
+    </main>
+
+    <script src="{{ url_for('static',filename='dashboard.js') }}"></script>
+
+</body>
+</html>
