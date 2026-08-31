@@ -21,10 +21,9 @@ app=Flask(__name__)
 telemetry=TelemetryReader(PORT)
 telemetry.start()
 
-# Transport-level failures (send_command()'s "error" values) vs FPGA-level
-# NACKs are two different failure classes -- a NACK means the request made
-# it to the FPGA and got a real answer, so it's a 200 with ok:false. A
-# transport failure means there's no real answer to report.
+#transport failures (send_command's "error" values) vs fpga nacks are two
+#different things - a nack means the fpga actually answered, so that's a
+#200 with ok:false. a transport failure means there's no real answer
 _ERROR_STATUS_CODES={"busy":429}
 
 
@@ -45,18 +44,16 @@ def events_api():
 
 @app.route("/api/events/clear",methods=["POST"])
 def clear_events_api():
-    # Host-side display history only -- never sends anything to the FPGA,
-    # not to be confused with RESET_COUNTERS or SYSTEM_RESET.
+    #host-side display history only, never touches the fpga, not to be
+    #confused with RESET_COUNTERS or SYSTEM_RESET
     telemetry.clear_events()
     return jsonify({"ok":True})
 
 
-# M7: one place shapes both the HTTP response and the logged event for
-# every command endpoint, so ACK/NACK/timeout/busy/error wording can't
-# drift between what the API returns and what the event log says
-# happened. log_label lets a caller log something more specific than the
-# generic command_name (e.g. "SET_WORKLOAD MEMORY" instead of just
-# "SET_WORKLOAD") without changing the JSON "command" field's meaning.
+#one place shapes both the http response and the logged event so the
+#wording can't drift between the two. log_label lets a caller log
+#something more specific than command_name, like "SET_WORKLOAD MEMORY"
+#instead of just "SET_WORKLOAD", without touching the json "command" field
 def _command_response(command_name,result,extra=None,log_label=None):
     label=log_label if log_label is not None else command_name
 
@@ -125,9 +122,8 @@ def workload_api():
     result=telemetry.send_command(CMD_SET_WORKLOAD,workload_id)
 
     if result["ok"] and result["status"]==RESP_ACK and result["data"]!=workload_id:
-        # FPGA ACKed but echoed a different workload than requested --
-        # report it as failed rather than claiming a selection we can't
-        # actually confirm happened
+        #fpga acked but echoed a different workload than we asked for,
+        #call it failed instead of claiming a selection we can't confirm
         result={"ok":False,"error":"echo_mismatch"}
 
     return _command_response(
@@ -157,22 +153,19 @@ def snapshot_api():
 
 @app.route("/api/inject-fault",methods=["POST"])
 def inject_fault_api():
-    # This ACKs "armed", not "already trapped" -- the real trap state only
-    # ever comes from telemetry (see dashboard.js), never from this
-    # response alone.
+    #this only means "armed", not "already trapped" - the real trap state
+    #comes from telemetry (see dashboard.js), never from this response
     result=telemetry.send_command(CMD_INJECT_FAULT)
     return _command_response("INJECT_FAULT",result)
 
 
 @app.route("/api/system-reset",methods=["POST"])
 def system_reset_api():
-    # send_command() returns as soon as the ACK response is decoded, which
-    # the RTL guarantees has already fully left the transmitter before the
-    # FPGA resets (see rtl/top.v's awaiting_reset_flush/reset_pulse_trigger).
-    # The reset pulse itself is purely internal to the FPGA logic -- it
-    # never touches the FTDI/USB connection -- so this request completing
-    # says nothing about whether POST has rerun yet; the frontend polls
-    # telemetry independently for that.
+    #send_command returns once the ack is decoded, and the rtl guarantees
+    #that's already fully sent before the fpga resets (see
+    #awaiting_reset_flush/reset_pulse_trigger in top.v). the reset pulse
+    #never touches the ftdi/usb connection so this says nothing about
+    #whether post has rerun yet, frontend polls telemetry for that
     result=telemetry.send_command(CMD_SYSTEM_RESET)
     return _command_response("SYSTEM_RESET",result)
 

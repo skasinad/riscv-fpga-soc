@@ -1,16 +1,15 @@
 `timescale 1ns/1ps
 
-// Gate-level check against the actual routed bitstream (build/soc.asc, via
-// icebox_vlog), not just the RTL. RTL sim is zero-delay and can look fine
-// while the real place-and-route misses timing -- this is what caught the
-// 100 MHz vs ~74 MHz Fmax problem during original bring-up.
+//gate level check against the actual routed bitstream (via icebox_vlog),
+//not just rtl sim. rtl sim is zero delay and can look fine even when pnr
+//misses timing, this is how we caught the 100mhz vs ~74mhz fmax problem
 
 module tb_pnr;
 
 reg clk = 0;
 always #5 clk = ~clk;
 
-// pin mapping (from constraints/alchitry_cu.pcf via icestorm chipdb-8k.txt):
+//pin mapping (from constraints/alchitry_cu.pcf via icestorm chipdb-8k.txt):
 //   clk    P7  -> io_16_0_1
 //   led[0] J11 -> io_33_6_0  (gpio_out[0])
 //   led[1] K11 -> io_33_4_1  (gpio_out[1])

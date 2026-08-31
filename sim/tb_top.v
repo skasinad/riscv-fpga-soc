@@ -12,9 +12,8 @@ top dut (
     .led(led)
 );
 
-// firmware runs the full POST sequence, ending in a ~5,000,000 sys_clk
-// (10,000,000 raw clk) visible delay before POST_PASS -- give it enough
-// margin to actually get there rather than timing out early
+//firmware runs the full post sequence, ends with a ~5,000,000 sys_clk
+//delay before pass, so give it enough margin to not time out early
 localparam RAW_CLK_LIMIT = 12_000_000;
 
 reg [7:0] last_gpio;
@@ -24,7 +23,7 @@ initial begin
     $dumpfile("sim/wave.vcd");
     $dumpvars(0, tb_top);
 
-    last_gpio = 8'hFF; // force a print on the first sample
+    last_gpio = 8'hFF; //force a print on the first sample
 
     for (i = 0; i < RAW_CLK_LIMIT; i = i + 1) begin
         @(posedge clk);

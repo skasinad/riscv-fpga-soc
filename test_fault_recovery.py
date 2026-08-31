@@ -18,11 +18,10 @@ RESPONSE_PAYLOAD_SIZE = 8
 
 WORKLOADS = {"IDLE": 0, "ALU": 1, "MEMORY": 2, "BRANCH": 3, "MMIO": 4, "MIXED": 5}
 
-TRAP_OBSERVE_TIMEOUT = 5.0   # ACK is near-instant; trap follows within microseconds
-                             # of the fault being armed, telemetry just needs to
-                             # catch up on its next ~1s tick
-RECOVERY_TIMEOUT = 5.0       # POST's own visible delay is ~100ms; 5s is a generous margin
-LED_OBSERVE_PAUSE = 5.0      # time to physically look at LED7 before recovering
+TRAP_OBSERVE_TIMEOUT = 5.0  #ack is near instant, trap follows within microseconds
+                            #of the fault being armed, telemetry just needs to catch up
+RECOVERY_TIMEOUT = 5.0  #post's own delay is ~100ms so 5s is plenty of margin
+LED_OBSERVE_PAUSE = 5.0  #time to physically look at led7 before recovering
 
 
 def build_frame(cmd, arg=0):
@@ -129,8 +128,8 @@ if __name__ == "__main__":
         require(resp is not None and resp["status"] == 0x00, "INJECT_FAULT did not ACK")
         print("FAULT ACK")
 
-        # the ACK means armed, not trapped -- trap state only ever comes
-        # from telemetry, checked here independently of the response above
+        #ack just means armed, not trapped - trap state only ever comes
+        #from telemetry, checked separately here
         telem = wait_for_telemetry(ser, lambda p: p["trap"], TRAP_OBSERVE_TIMEOUT)
         require(telem is not None, f"telemetry never reported trap=1 within {TRAP_OBSERVE_TIMEOUT}s")
         print("TRAP ASSERTED")

@@ -24,7 +24,7 @@ FLAG_SNAPSHOT_SEEN = 0x08
 #same checksum convention as the command frame, magic1 0x5B distinguishes it
 #from a telemetry packet on the same wire
 RESPONSE_MAGIC = b"\xA5\x5B"
-RESPONSE_PAYLOAD_SIZE = 8  # VERSION+CMD_ECHO+STATUS+DATA(4)+CHECKSUM
+RESPONSE_PAYLOAD_SIZE = 8  #VERSION+CMD_ECHO+STATUS+DATA(4)+CHECKSUM
 
 RESP_ACK = 0x00
 RESP_NACK_BAD_CHECKSUM = 0x01
@@ -151,9 +151,8 @@ def test_reset_counters(ser):
         print("FAIL: unexpected response fields")
         return False
 
-    # the CPU keeps running between the command and the next telemetry
-    # sample, so this won't read exactly 0 -- it just has to be far below
-    # "before" rather than a continuation of the same trend
+    #cpu keeps running between the command and the next telemetry sample,
+    #so this won't read exactly 0, just has to be well below "before"
     after = read_packet(ser)
     while after is not None and after["type"] != "telemetry":
         after = read_packet(ser)
@@ -210,7 +209,7 @@ def test_capture_snapshot(ser):
 
 def test_bad_checksum(ser):
     print("--- Test D: BAD CHECKSUM ---")
-    resp = send_command_wait_response(ser, CMD_PING, checksum=0xFF)  # deliberately wrong
+    resp = send_command_wait_response(ser, CMD_PING, checksum=0xFF)  #deliberately wrong
 
     if resp is None:
         print("FAIL: no response received")
@@ -229,7 +228,7 @@ def test_bad_checksum(ser):
 
 def test_unknown_command(ser):
     print("--- Test E: UNKNOWN COMMAND ---")
-    resp = send_command_wait_response(ser, 0xFF)  # valid checksum, undefined command
+    resp = send_command_wait_response(ser, 0xFF)  #valid checksum, undefined command
 
     if resp is None:
         print("FAIL: no response received")
@@ -265,7 +264,7 @@ def test_telemetry_coexistence(ser, seconds=3):
                 response_seen += 1
                 print(f"  RESPONSE   cmd_echo=0x{pkt['cmd_echo']:02x} "
                       f"status={RESP_STATUS_NAMES.get(pkt['status'], pkt['status'])} checksum_ok={pkt['checksum_ok']}")
-                break  # got the PING's response, send the next one
+                break  #got the ping's response, send the next one
 
             pkt = read_packet(ser)
 

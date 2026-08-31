@@ -5,7 +5,7 @@ PORT="/dev/cu.usbserial-FT4MG9OV1"
 BAUD=115200
 
 HEADER=b"\xA5\x5A"
-PAYLOAD_SIZE=27 # M4: version 0x02, +DATA_RAM_COUNT +WORKLOAD_ID
+PAYLOAD_SIZE=27 #version 0x02, +DATA_RAM_COUNT +WORKLOAD_ID
 
 
 def read_exact(ser,size):

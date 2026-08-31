@@ -5,13 +5,9 @@ module top(
     input wire usb_rx
 );
 
-// Clock divider
-//
-// The Alchitry Cu provides a 100 MHz input clock. The current PicoRV32 SoC
-// does not meet timing at 100 MHz -- place-and-route shows an achievable
-// frequency of roughly 74 MHz. The system runs from a divided 50 MHz clock,
-// which gives comfortable margin while still being faster than the initial
-// 25 MHz bring-up frequency.
+//clock divider
+//100mhz input doesn't meet timing for the picorv32 setup, pnr only gets
+//about 74mhz out of it, so we run everything off a divided 50mhz clock
 
 reg [1:0] clkdiv=0;
 
@@ -20,17 +16,11 @@ always @(posedge clk)
 
 wire sys_clk=clkdiv[0];
 
-
-// Reset generation
-//
-// resetn combines two sources, each with exactly one owner, so it stays a
-// plain derived wire rather than something written from more than one
-// place. poweron_counter is the original M1 cold-boot reset, unchanged.
-// reset_pulse_active is a host-requested pulse armed by reset_pulse_trigger
-// (see the TX arbiter block below -- awaiting_reset_flush/reset_pulse_trigger),
-// which only fires once a CMD_SYSTEM_RESET ACK has fully left the UART
-// transmitter. Combining them as poweron_done && !reset_pulse_active means
-// either source alone is enough to hold the SoC in reset.
+//reset generation
+//resetn comes from two sources so it's a plain wire, never written from
+//two places. poweron_counter is the original cold boot reset, and
+//reset_pulse_active is the host triggered SYSTEM_RESET pulse (armed once
+//the ack for it is fully sent, see the tx arbiter below)
 
 reg [7:0] poweron_counter=0;
 wire poweron_done=poweron_counter[7];
@@ -41,12 +31,8 @@ begin
         poweron_counter<=poweron_counter+1;
 end
 
-// 128 cycles (2.56us @ 50 MHz) matches the power-on reset's own
-// already-verified duration. Every register in this design uses a plain
-// synchronous "if(!resetn) reg<=0" pattern (no multi-cycle reset chains),
-// so even 1 cycle would technically clear them all, but reusing the
-// cold-boot duration avoids inventing a second, separately-justified
-// constant for what is architecturally the same kind of reset.
+//128 cycles matches the power-on reset duration so both resets behave
+//the same way
 localparam RESET_PULSE_CYCLES = 128;
 
 reg [7:0] reset_pulse_counter=0;
@@ -71,8 +57,7 @@ end
 wire resetn=poweron_done && !reset_pulse_active;
 
 
-
-// PicoRV32 memory interface
+//picorv32 memory interface
 wire trap;
 
 wire mem_valid;
@@ -85,8 +70,7 @@ wire [3:0] mem_wstrb;
 wire [31:0] mem_rdata;
 
 
-
-// 4 KB RAM
+//4kb ram
 
 localparam RAM_BYTES = 32'h00001000;
 
@@ -95,32 +79,20 @@ reg [31:0] memory [0:1023];
 reg ram_ready=0;
 reg [31:0] ram_rdata=0;
 
-// word index into memory[]; mem_addr is byte-addressed, memory[] is 32-bit wide
+//word index into memory[], mem_addr is byte addressed but memory[] is 32 bit
 wire [9:0] ram_word_addr = mem_addr[11:2];
 
-// M6: one-shot illegal-instruction fault injection.
-//
-// 0x00000000 is guaranteed illegal for this core's configuration: opcode
-// bits[6:0]=0000000 doesn't match any RV32I major opcode (LUI=0110111,
-// AUIPC=0010111, JAL=1101111, JALR=1100111, LOAD=0000011, OP-IMM=0010011,
-// OP=0110011, BRANCH=1100011, STORE=0100011, FENCE=0001111, SYSTEM=1110011
-// -- all nonzero), so every instr_* classification flag in picorv32.v's
-// decoder stays 0 and instr_trap's all-zero check fires unconditionally
-// (confirmed by reading rtl/core/picorv32.v directly, not assumed).
-// COMPRESSED_ISA=0 on this core, so the 16-bit C-extension decode path
-// never even applies. This is also the RISC-V spec's own reserved
-// "guaranteed illegal" encoding, not a value specific to this decoder.
+//one shot illegal instruction fault injection
+//0x00000000 is guaranteed illegal here - opcode bits[6:0]=0000000 doesn't
+//match any RV32I opcode (checked this against picorv32's decoder directly),
+//and it's also the spec's own "definitely illegal" encoding so it's not
+//just something that happens to work on this core
 localparam ILLEGAL_INSTRUCTION = 32'h00000000;
 
-// fault_pending is armed by CMD_INJECT_FAULT and lives in the RX parser
-// block below (same split-ownership shape as resp_pending/resp_consumed:
-// one block arms it, the block that actually consumes it clears it).
-// inject_this_fetch is latched from the exact same request-qualifying
-// condition ram_ready/ram_rdata already use below, so it lands in
-// lockstep one cycle later when the fetch actually completes -- only a
-// real instruction fetch (mem_instr) hitting this synchronous RAM path
-// can ever set it. Data loads/stores never do (mem_instr=0 at request
-// time), and MMIO reads never reach this block at all.
+//fault_pending gets armed by CMD_INJECT_FAULT down in the rx parser, same
+//pattern as resp_pending/resp_consumed - one block sets it, one clears it.
+//inject_this_fetch mirrors ram_ready's timing so it lines up with the
+//actual fetch completing, only real instruction fetches trip this
 reg fault_pending=0;
 reg inject_this_fetch=0;
 
@@ -130,30 +102,30 @@ end
 
 
 
-// MMIO register bank
-localparam GPIO_OUT_ADDR     = 32'h10000000;
-localparam SYS_STATUS_ADDR   = 32'h10000004;
-localparam CYCLE_COUNT_LO    = 32'h10000008;
-localparam CYCLE_COUNT_HI    = 32'h1000000C;
-localparam DEBUG_CTRL_ADDR   = 32'h10000010;
-localparam INSTR_COUNT_ADDR   = 32'h10000014;
-localparam MEM_COUNT_ADDR     = 32'h10000018;
-localparam MMIO_COUNT_ADDR    = 32'h1000001C;
+//mmio register bank
+localparam GPIO_OUT_ADDR = 32'h10000000;
+localparam SYS_STATUS_ADDR = 32'h10000004;
+localparam CYCLE_COUNT_LO = 32'h10000008;
+localparam CYCLE_COUNT_HI = 32'h1000000C;
+localparam DEBUG_CTRL_ADDR = 32'h10000010;
+localparam INSTR_COUNT_ADDR = 32'h10000014;
+localparam MEM_COUNT_ADDR = 32'h10000018;
+localparam MMIO_COUNT_ADDR = 32'h1000001C;
 
-localparam SNAP_CTRL_ADDR     = 32'h10000020;
+localparam SNAP_CTRL_ADDR = 32'h10000020;
 localparam SNAP_CYCLE_LO_ADDR = 32'h10000024;
 localparam SNAP_CYCLE_HI_ADDR = 32'h10000028;
-localparam SNAP_INSTR_ADDR    = 32'h1000002C;
-localparam SNAP_MEM_ADDR      = 32'h10000030;
-localparam SNAP_MMIO_ADDR     = 32'h10000034;
+localparam SNAP_INSTR_ADDR = 32'h1000002C;
+localparam SNAP_MEM_ADDR = 32'h10000030;
+localparam SNAP_MMIO_ADDR = 32'h10000034;
 
-localparam WORKLOAD_SELECT_ADDR  = 32'h10000038;
-localparam DATA_RAM_COUNT_ADDR   = 32'h1000003C;
-localparam SNAP_DATA_RAM_ADDR    = 32'h10000040;
+localparam WORKLOAD_SELECT_ADDR = 32'h10000038;
+localparam DATA_RAM_COUNT_ADDR = 32'h1000003C;
+localparam SNAP_DATA_RAM_ADDR = 32'h10000040;
 localparam WORKLOAD_SCRATCH_ADDR = 32'h10000044;
 
 localparam MMIO_BASE = GPIO_OUT_ADDR;
-localparam MMIO_TOP  = DEBUG_CTRL_ADDR;
+localparam MMIO_TOP = DEBUG_CTRL_ADDR;
 
 reg [7:0] gpio_out=0;
 reg [31:0] debug_ctrl=0;
@@ -163,10 +135,9 @@ reg [31:0] instr_count=0;
 reg [31:0] mem_access_count=0;
 reg [31:0] mmio_access_count=0;
 
-// MEM_COUNT already has physically-verified historical meaning (total RAM
-// accesses, including fetches) and isn't being touched. This is the subset
-// that's actually data traffic -- the thing a MEMORY-vs-ALU workload
-// comparison actually needs and MEM_COUNT alone can't show.
+//MEM_COUNT already means "total ram access incl fetches" and that's a
+//physically verified meaning we don't want to break, so this tracks just
+//the data traffic separately (what a memory vs alu comparison needs)
 reg [31:0] data_ram_count=0;
 
 reg [63:0] snap_cycle_count=0;
@@ -175,13 +146,12 @@ reg [31:0] snap_mem_count=0;
 reg [31:0] snap_mmio_count=0;
 reg [31:0] snap_data_ram_count=0;
 
-// Set only by the RX command parser (CMD_SET_WORKLOAD) -- firmware reads
-// it through MMIO but never writes it, so there's exactly one owner. 3
-// bits covers workload IDs 0-5 with room to spare.
+//only the rx parser writes this, firmware just reads it over mmio
+//3 bits covers workload ids 0-5 with room to spare
 reg [2:0] workload_select=0;
 
-// Plain R/W scratch word, same shape as debug_ctrl, so the MMIO workload
-// has somewhere to hit repeatedly without touching GPIO/SNAP_CTRL/DEBUG_CTRL.
+//plain r/w scratch word like debug_ctrl, gives the mmio workload
+//something to hit without touching gpio/snap_ctrl/debug_ctrl
 reg [31:0] workload_scratch=0;
 
 reg [7:0] uart_data=0;
@@ -189,20 +159,16 @@ reg uart_start=0;
 wire uart_busy;
 wire uart_tx_line;
 
-reg [5:0] uart_state=0; // widened from [4:0] in M3: response states run 26-35, M4 shifts that to 31-40
+reg [5:0] uart_state=0; //widened from [4:0], response states got shuffled around a few times
 reg [25:0] uart_interval=0;
 
-// M6: set the cycle the SYSTEM_RESET response's checksum byte (state 40)
-// is handed to uart_tx, cleared the cycle that byte's transmission
-// actually finishes. uart_state returns to 0 immediately when state 40
-// fires -- before the checksum byte has even started shifting out -- so
-// checking uart_state alone would reset the SoC before the ACK reaches
-// the host. Watching for uart_busy to go 1-then-0 while this is set is
-// what makes the reset genuinely wait for the byte to leave the wire.
+//set when the system_reset ack's last byte gets handed to uart_tx, cleared
+//once that byte is actually done sending. uart_state goes back to 0 before
+//the byte even starts shifting out, so checking uart_state alone isn't
+//enough - need to watch uart_busy go high then low again
 reg awaiting_reset_flush=0;
 
-// One-cycle pulse: safe to begin the internal reset pulse now. Read by
-// the reset generator above; written only here.
+//one cycle pulse, tells the reset generator up top it's safe to reset now
 reg reset_pulse_trigger=0;
 
 reg [63:0] uart_cycle_snapshot=0;
@@ -213,29 +179,22 @@ reg [7:0] uart_flags_snapshot=0;
 reg [31:0] uart_data_ram_snapshot=0;
 reg [7:0] uart_workload_snapshot=0;
 
-// One cycle behind resp_pending on purpose: cmd_capture_snapshot and
-// snap_instr_count updating are themselves a cycle apart (pulse fires,
-// then the MMIO-ack block's sibling if writes the register the cycle
-// after). Without this delay an idle arbiter can commit and latch
-// resp_data_value in that same window, one cycle before snap_instr_count
-// has actually taken on the fresh value -- reporting stale data.
+//one cycle behind resp_pending on purpose - snap_instr_count updates a
+//cycle after cmd_capture_snapshot pulses, so without this delay we'd
+//latch the response data before the snapshot register actually updates
 reg resp_pending_d1=0;
 
-// Response fields latched at the moment the arbiter commits to sending,
-// so the byte-send sequence below has a stable snapshot even if the RX
-// side classifies a new command mid-transmission.
+//latched when the arbiter commits to sending so the byte sequence below
+//stays stable even if a new command comes in mid transmission
 reg resp_consumed=0;
 reg [7:0] resp_tx_cmd_echo=0;
 reg [7:0] resp_tx_status=0;
 reg [31:0] resp_tx_data=0;
 reg [7:0] resp_tx_checksum=0;
 
-// CAPTURE_SNAPSHOT and SET_WORKLOAD are the only commands with a meaningful
-// result value; everything else reports 0 in DATA. workload_select is
-// read here (not cmd_arg) because by the time the arbiter reaches this
-// commit point it's already settled -- same one-cycle margin resp_pending_d1
-// already provides for snap_instr_count below, and workload_select updates
-// even sooner since it's a direct assignment, not a pulse-triggered one.
+//only capture_snapshot and set_workload have a real result value,
+//everything else just reports 0. reading workload_select here instead of
+//cmd_arg since it's already settled by the time the arbiter commits
 wire [31:0] resp_data_value =
     (resp_cmd_echo==CMD_CAPTURE_SNAPSHOT && resp_status==RESP_ACK) ? snap_instr_count :
     (resp_cmd_echo==CMD_SET_WORKLOAD && resp_status==RESP_ACK) ? {29'b0,workload_select} :
@@ -245,47 +204,45 @@ wire [7:0] resp_checksum_value =
     CMD_PROTO_VER ^ resp_cmd_echo ^ resp_status ^
     resp_data_value[7:0] ^ resp_data_value[15:8] ^ resp_data_value[23:16] ^ resp_data_value[31:24];
 
-// Host command receiver. MAGIC(2) VERSION(1) CMD(1) ARG(4, little-endian)
-// CHECKSUM(1). Checksum is XOR of VERSION,CMD,ARG[0..3] -- magic bytes
-// aren't included, they're the framing signal, not payload.
-localparam CMD_MAGIC0    = 8'hA5;
-localparam CMD_MAGIC1    = 8'h5A;
+//host command frame: MAGIC(2) VERSION(1) CMD(1) ARG(4 little endian) CHECKSUM(1)
+//checksum is xor of version/cmd/arg bytes, magic isn't included since it's
+//just the framing signal not payload
+localparam CMD_MAGIC0 = 8'hA5;
+localparam CMD_MAGIC1 = 8'h5A;
 localparam CMD_PROTO_VER = 8'h01;
-localparam CMD_PING             = 8'h01;
-localparam CMD_RESET_COUNTERS   = 8'h02;
+localparam CMD_PING = 8'h01;
+localparam CMD_RESET_COUNTERS = 8'h02;
 localparam CMD_CAPTURE_SNAPSHOT = 8'h03;
-localparam CMD_SET_WORKLOAD     = 8'h04;
-localparam CMD_INJECT_FAULT     = 8'h05;
-localparam CMD_SYSTEM_RESET     = 8'h06;
+localparam CMD_SET_WORKLOAD = 8'h04;
+localparam CMD_INJECT_FAULT = 8'h05;
+localparam CMD_SYSTEM_RESET = 8'h06;
 
-localparam WORKLOAD_MAX = 32'd5; // IDLE..MIXED, see firmware/main.c
+localparam WORKLOAD_MAX = 32'd5; //idle..mixed, see firmware/main.c
 
-// Response packet: MAGIC0 MAGIC1 VERSION CMD_ECHO STATUS DATA[0..3] CHECKSUM.
-// Same checksum convention as the command frame. MAGIC1 is 0x5B, not the
-// telemetry stream's 0x5A -- both ride usb_tx, so the host needs to tell
-// them apart from the first two bytes without waiting for more.
+//response packet: MAGIC0 MAGIC1 VERSION CMD_ECHO STATUS DATA[0..3] CHECKSUM
+//same checksum convention as the command frame. magic1 is 0x5B here, not
+//0x5A, so the host can tell response vs telemetry apart right away
 localparam RESP_MAGIC0 = 8'hA5;
 localparam RESP_MAGIC1 = 8'h5B;
 
-localparam RESP_ACK               = 8'h00;
+localparam RESP_ACK = 8'h00;
 localparam RESP_NACK_BAD_CHECKSUM = 8'h01;
-localparam RESP_NACK_BAD_VERSION  = 8'h02;
-localparam RESP_NACK_UNKNOWN_CMD  = 8'h03;
+localparam RESP_NACK_BAD_VERSION = 8'h02;
+localparam RESP_NACK_UNKNOWN_CMD = 8'h03;
 localparam RESP_NACK_BAD_ARGUMENT = 8'h04;
 
-localparam RX_IDLE     = 0;
-localparam RX_MAGIC1   = 1;
-localparam RX_VERSION  = 2;
-localparam RX_CMDID    = 3;
-localparam RX_ARG0     = 4;
-localparam RX_ARG1     = 5;
-localparam RX_ARG2     = 6;
-localparam RX_ARG3     = 7;
+localparam RX_IDLE = 0;
+localparam RX_MAGIC1 = 1;
+localparam RX_VERSION = 2;
+localparam RX_CMDID = 3;
+localparam RX_ARG0 = 4;
+localparam RX_ARG1 = 5;
+localparam RX_ARG2 = 6;
+localparam RX_ARG3 = 7;
 localparam RX_CHECKSUM = 8;
 
-// 20000 cycles = 400us @ 50 MHz, ~4.6 byte times -- generous margin over
-// host-side scheduling jitter between bytes of the same frame without
-// taking long to resync if a transfer genuinely stalls mid-frame
+//20000 cycles = 400us @ 50mhz, ~4.6 byte times, plenty of margin for host
+//scheduling jitter without taking forever to resync if a frame stalls
 localparam CMD_TIMEOUT_CYCLES = 20000;
 
 wire [7:0] rx_data;
@@ -301,19 +258,16 @@ reg cmd_ping_seen=0;
 reg cmd_reset_counters=0;
 reg cmd_capture_snapshot=0;
 
-// SNAP_* only exists on the CPU's MMIO bus, and cmd_snapshot_seen predates
-// M3's response packets -- kept as-is since it's already dashboard/M1/M2
-// compatible and cheap to leave in place.
+//predates the response packets, keeping it since it's cheap and the
+//older dashboard path still uses it
 reg cmd_snapshot_seen=0;
 
-// One outstanding response at a time: the RX parser latches what to send
-// here, the TX arbiter drains it whenever the line is free. If a second
-// valid frame classifies before the first response has started sending,
-// it overwrites resp_cmd_echo/resp_status and the first response is lost
-// (its command side effect already happened and is NOT re-run or lost --
-// only the acknowledgment of it is). Host commands are expected to be
-// serialized (wait for a response before sending the next one); a deeper
-// queue isn't justified for that usage pattern.
+//only one outstanding response at a time - rx parser latches what to
+//send, tx arbiter drains it when the line is free. if a second command
+//comes in before the first response goes out, it overwrites
+//resp_cmd_echo/status and the first ack gets lost (the command's actual
+//side effect already happened though, just the ack for it is gone).
+//host is expected to wait for a response before sending the next command
 reg resp_pending=0;
 reg [7:0] resp_cmd_echo=0;
 reg [7:0] resp_status=0;
@@ -326,8 +280,7 @@ assign mmio_select =
     (mem_addr<=32'h10000044);
 
 
-// Synchronous RAM
-// This follows the style used by PicoRV32's reference PicoSoC memory implementation.
+//synchronous ram, same style as picorv32's reference picosoc memory
 always @(posedge sys_clk)
 begin
     ram_ready<=mem_valid &&
@@ -361,7 +314,7 @@ begin
 end
 
 
-// Hardware cycle counter
+//hardware cycle counter
 always @(posedge sys_clk)
 begin
     if(!resetn)
@@ -370,7 +323,7 @@ begin
         cycle_counter<=cycle_counter+1;
 end
 
-//Execution monitor
+//execution monitor
 always @(posedge sys_clk)
 begin
     if(!resetn)
@@ -382,11 +335,10 @@ begin
     end
     else if(cmd_reset_counters)
     begin
-        // host reset wins over a same-cycle bus event so each RESET_COUNTERS
-        // establishes a clean measurement boundary instead of racing whatever
-        // the CPU happened to be doing that cycle. cycle_counter is left
-        // alone -- it's system uptime, not an experiment counter, and POST's
-        // own delay_cycles() already depends on it being monotonic.
+        //host reset wins over a same cycle bus event so RESET_COUNTERS gives
+        //a clean boundary instead of racing whatever the cpu is doing.
+        //cycle_counter stays untouched, it's uptime not an experiment
+        //counter and POST needs it monotonic
         instr_count<=0;
         mem_access_count<=0;
         mmio_access_count<=0;
@@ -400,9 +352,8 @@ begin
         if(mem_valid&&mem_ready&&ram_ready)
             mem_access_count<=mem_access_count+1;
 
-        // same qualifying condition as mem_access_count, minus fetches --
-        // ram_ready alone can't tell a data load/store from an instruction
-        // fetch, that's what mem_instr is for
+        //same condition as mem_access_count but skip fetches - mem_instr
+        //tells us if this is a real data access vs an instruction fetch
         if(mem_valid&&mem_ready&&ram_ready&&!mem_instr)
             data_ram_count<=data_ram_count+1;
 
@@ -412,12 +363,12 @@ begin
 end
 
 
-// Debug indicators
+//debug indicators
 reg saw_mem_request=0;
 reg saw_instruction_fetch=0;
 reg saw_mmio_write=0;
 
-// MMIO acknowledgement and writes
+//mmio ack and writes
 reg mmio_ready=0;
 reg [31:0] mmio_rdata=0;
 
@@ -425,18 +376,12 @@ always @(posedge sys_clk)
 begin
     mmio_ready<=0;
 
-    // M6: this block previously had no resetn handling at all -- harmless
-    // for cold boot (FPGA flip-flops take their declared initial value
-    // straight from the bitstream at configuration), but a host-triggered
-    // SYSTEM_RESET is a runtime pulse, not a reconfiguration, so without
-    // this these registers would silently keep their pre-reset values.
-    // gpio_out in particular drives LED0-6 directly and must not still
-    // show a stale fault code after recovery, and the snapshot registers
-    // are explicitly required to reset. mmio_ready/mmio_rdata don't need
-    // it: mmio_ready already self-clears every cycle above, and stale
-    // mmio_rdata is never observed since mem_rdata only selects it when
-    // mmio_ready is genuinely 1 (same reasoning ram_rdata already relies
-    // on without its own resetn gating).
+    //this block used to have no resetn handling, which was fine for cold
+    //boot since the fpga just loads initial values from the bitstream. but
+    //a SYSTEM_RESET is a runtime pulse not a reconfig, so these would keep
+    //their old values without this. gpio_out especially needs to clear or
+    //it'd still show a stale fault code after recovery. mmio_ready/rdata
+    //don't need resetting, same reasoning as ram_rdata not needing it
     if(!resetn)
     begin
         gpio_out<=0;
@@ -577,11 +522,10 @@ begin
         endcase
     end
 
-    // Reuses the exact SNAP_* registers the firmware-triggered SNAP_CTRL
-    // write above uses, so a host-captured snapshot and a firmware-captured
-    // one have identical coherence semantics -- not a second snapshot path.
-    // If both triggers land on the same cycle they'd write identical values
-    // anyway (same source counters), so no arbitration is needed here.
+    //reuses the same SNAP_* registers the firmware SNAP_CTRL write above
+    //uses, so host and firmware snapshots behave identically, not a
+    //separate path. if both happen to fire the same cycle they'd write
+    //the same values anyway so no arbitration needed
     if(cmd_capture_snapshot)
     begin
         snap_cycle_count<=cycle_counter;
@@ -594,7 +538,7 @@ begin
 end
 
 
-// Return data / ready to processor
+//return data/ready to the cpu
 assign mem_ready =
     ram_ready ||
     mmio_ready;
@@ -620,8 +564,7 @@ begin
 end
 
 
-
-// LEDs
+//leds
 assign led[0]=gpio_out[0];
 assign led[1]=gpio_out[1];
 assign led[2]=gpio_out[2];
@@ -631,7 +574,7 @@ assign led[5]=gpio_out[5];
 assign led[6]=gpio_out[6];
 assign led[7]=trap;
 
-// RISC-V CPU
+//risc-v cpu
 picorv32 #(
     .PROGADDR_RESET(32'h00000000),
 
@@ -699,11 +642,10 @@ begin
     end
     else if(uart_state==0)
     begin
-        // Responses jump ahead of a new telemetry packet -- the host is
-        // actively waiting on one, telemetry is a free-running background
-        // stream that can absorb the delay. uart_interval keeps counting
-        // through the whole thing since it only advances here at uart_state==0,
-        // same as it already pauses during an ordinary telemetry send.
+        //responses jump ahead of telemetry, host is actively waiting on a
+        //response but telemetry is just a free running background stream
+        //that can wait. uart_interval keeps counting through this since it
+        //only advances at uart_state==0 anyway, same as during a normal send
         if(resp_pending_d1)
         begin
             resp_consumed<=1;
@@ -712,7 +654,7 @@ begin
             resp_tx_data<=resp_data_value;
             resp_tx_checksum<=resp_checksum_value;
 
-            uart_state<=31; // response header, see states 31-40 below
+            uart_state<=31; //response header, see states 31-40 below
         end
         else if(uart_interval==49999999)
         begin
@@ -744,16 +686,15 @@ begin
     begin
         case(uart_state)
 
-            //Packet header. Version bumped 0x01->0x02 in M4: DATA_RAM_COUNT
-            //and WORKLOAD_ID extend the payload length, so an old decoder
-            //expecting exactly 22 bytes needs a way to notice before it
-            //misframes the next packet against the leftover bytes.
+            //packet header. version bumped 0x01->0x02 when we added
+            //DATA_RAM_COUNT and WORKLOAD_ID so an old decoder can tell
+            //before it misframes the next packet
             1:  begin uart_data<=8'hA5; uart_start<=1; uart_state<=2;  end
             2:  begin uart_data<=8'h5A; uart_start<=1; uart_state<=3;  end
             3:  begin uart_data<=8'h02; uart_start<=1; uart_state<=4;  end
             4:  begin uart_data<=uart_flags_snapshot; uart_start<=1; uart_state<=5; end
 
-            //64-bit cycle counter, little endian
+            //64 bit cycle counter, little endian
             5:  begin uart_data<=uart_cycle_snapshot[7:0];   uart_start<=1; uart_state<=6;  end
             6:  begin uart_data<=uart_cycle_snapshot[15:8];  uart_start<=1; uart_state<=7;  end
             7:  begin uart_data<=uart_cycle_snapshot[23:16]; uart_start<=1; uart_state<=8;  end
@@ -763,54 +704,53 @@ begin
             11: begin uart_data<=uart_cycle_snapshot[55:48]; uart_start<=1; uart_state<=12; end
             12: begin uart_data<=uart_cycle_snapshot[63:56]; uart_start<=1; uart_state<=13; end
 
-            //Instruction counter
+            //instruction counter
             13: begin uart_data<=uart_instr_snapshot[7:0];   uart_start<=1; uart_state<=14; end
             14: begin uart_data<=uart_instr_snapshot[15:8];  uart_start<=1; uart_state<=15; end
             15: begin uart_data<=uart_instr_snapshot[23:16]; uart_start<=1; uart_state<=16; end
             16: begin uart_data<=uart_instr_snapshot[31:24]; uart_start<=1; uart_state<=17; end
 
-            //RAM access counter (includes instruction fetches, historical meaning)
+            //ram access counter, includes instruction fetches (historical meaning)
             17: begin uart_data<=uart_mem_snapshot[7:0];   uart_start<=1; uart_state<=18; end
             18: begin uart_data<=uart_mem_snapshot[15:8];  uart_start<=1; uart_state<=19; end
             19: begin uart_data<=uart_mem_snapshot[23:16]; uart_start<=1; uart_state<=20; end
             20: begin uart_data<=uart_mem_snapshot[31:24]; uart_start<=1; uart_state<=21; end
 
-            //MMIO access counter
+            //mmio access counter
             21: begin uart_data<=uart_mmio_snapshot[7:0];   uart_start<=1; uart_state<=22; end
             22: begin uart_data<=uart_mmio_snapshot[15:8];  uart_start<=1; uart_state<=23; end
             23: begin uart_data<=uart_mmio_snapshot[23:16]; uart_start<=1; uart_state<=24; end
             24: begin uart_data<=uart_mmio_snapshot[31:24]; uart_start<=1; uart_state<=25; end
 
-            //Data RAM access counter (excludes instruction fetches -- new in M4)
+            //data ram access counter, excludes instruction fetches
             25: begin uart_data<=uart_data_ram_snapshot[7:0];   uart_start<=1; uart_state<=26; end
             26: begin uart_data<=uart_data_ram_snapshot[15:8];  uart_start<=1; uart_state<=27; end
             27: begin uart_data<=uart_data_ram_snapshot[23:16]; uart_start<=1; uart_state<=28; end
             28: begin uart_data<=uart_data_ram_snapshot[31:24]; uart_start<=1; uart_state<=29; end
 
-            //Active workload ID
+            //active workload id
             29: begin uart_data<=uart_workload_snapshot; uart_start<=1; uart_state<=30; end
 
-            //Wait for the next reporting interval
+            //wait for the next reporting interval
             30: uart_state<=0;
 
-            //Response header
+            //response header
             31: begin uart_data<=RESP_MAGIC0;      uart_start<=1; uart_state<=32; end
             32: begin uart_data<=RESP_MAGIC1;      uart_start<=1; uart_state<=33; end
             33: begin uart_data<=CMD_PROTO_VER;    uart_start<=1; uart_state<=34; end
             34: begin uart_data<=resp_tx_cmd_echo; uart_start<=1; uart_state<=35; end
             35: begin uart_data<=resp_tx_status;   uart_start<=1; uart_state<=36; end
 
-            //32-bit result, little endian (0 unless CAPTURE_SNAPSHOT/SET_WORKLOAD ACK)
+            //32 bit result, little endian (0 unless capture_snapshot/set_workload ack)
             36: begin uart_data<=resp_tx_data[7:0];   uart_start<=1; uart_state<=37; end
             37: begin uart_data<=resp_tx_data[15:8];  uart_start<=1; uart_state<=38; end
             38: begin uart_data<=resp_tx_data[23:16]; uart_start<=1; uart_state<=39; end
             39: begin uart_data<=resp_tx_data[31:24]; uart_start<=1; uart_state<=40; end
 
-            // M6: arm awaiting_reset_flush right here, not after uart_state
-            // returns to 0 -- resp_tx_cmd_echo/resp_tx_status are still the
-            // values latched when this response committed, and checking
-            // resp_tx_status==RESP_ACK means a NACKed SYSTEM_RESET (e.g.
-            // bad checksum) can never arm a reset.
+            //arm awaiting_reset_flush right here, not after uart_state goes
+            //back to 0 - resp_tx_cmd_echo/status still hold what was
+            //latched when this response committed. checking for ack means
+            //a nacked system_reset can't trigger an actual reset
             40: begin
                 uart_data<=resp_tx_checksum;
                 uart_start<=1;
@@ -825,11 +765,10 @@ begin
         endcase
     end
 
-    // M6: fires exactly once, on the cycle the checksum byte armed above
-    // has actually finished shifting out (busy went 1 then back to 0) --
-    // not on the cycle uart_state first returns to 0, which happens
-    // before that byte has even started transmitting. This is what
-    // guarantees the SYSTEM_RESET ACK is off the wire before resetn drops.
+    //fires once the checksum byte above is actually done shifting out
+    //(busy went high then low), not when uart_state first hits 0 which
+    //happens before the byte even starts. this is what keeps the ack
+    //ahead of the reset
     if(awaiting_reset_flush && !uart_busy && !uart_start)
     begin
         awaiting_reset_flush<=0;
@@ -848,15 +787,12 @@ uart_rx #(
     .valid(rx_valid)
 );
 
-// A malformed or partial frame must never produce a command side effect --
-// any magic/version/checksum mismatch just drops back to RX_IDLE and waits
-// for the next 0xA5. Only a fully verified frame reaches RX_CHECKSUM's
-// dispatch. Unrecognized-but-valid command IDs are accepted and silently
-// ignored, not treated as an error.
+//a bad frame should never cause a side effect - any magic/version/checksum
+//mismatch just drops back to idle and waits for the next 0xA5. unknown but
+//valid command ids get ack'd and ignored, not treated as an error
 always @(posedge sys_clk)
 begin
-    // command pulses default low every cycle so one received frame can't
-    // retrigger its side effect on a later cycle where nothing arrived
+    //pulses default low every cycle so one frame can't retrigger later
     cmd_reset_counters<=0;
     cmd_capture_snapshot<=0;
 
@@ -868,21 +804,17 @@ begin
         cmd_snapshot_seen<=0;
         resp_pending<=0;
         fault_pending<=0;
-        workload_select<=0; // M6: reset default is IDLE, a clean reboot behaves like a clean boot
+        workload_select<=0; //reset default is idle, clean reboot should look like a clean boot
     end
     else begin
 
-    // Cleared here by default once the arbiter has drained it; overridden
-    // below (later in program order, so it wins) if a new frame classifies
-    // on the exact same cycle -- a fresh command's response is never
-    // dropped just because the previous one's bookkeeping finished first.
+    //cleared here once the arbiter drains it, overridden below if a new
+    //frame classifies the same cycle so we never drop a fresh response
     if(resp_consumed)
         resp_pending<=0;
 
-    // Same split-ownership shape as resp_pending/resp_consumed above:
-    // inject_this_fetch is computed one cycle later in the synchronous RAM
-    // block, the exact cycle the armed fetch actually completes, so that's
-    // where the arm gets consumed.
+    //same pattern as resp_pending/resp_consumed, inject_this_fetch gets
+    //computed a cycle later in the ram block right when the fetch completes
     if(inject_this_fetch)
         fault_pending<=0;
 
@@ -908,8 +840,7 @@ begin
                 end
                 else
                 begin
-                    // no CMD byte has been read yet at this point in the
-                    // frame, so there's nothing real to echo
+                    //no cmd byte read yet at this point so nothing real to echo
                     resp_pending<=1;
                     resp_cmd_echo<=8'h00;
                     resp_status<=RESP_NACK_BAD_VERSION;
@@ -954,10 +885,9 @@ begin
 
             RX_CHECKSUM:
             begin
-                // the CMD byte was received either way -- echo it even on
-                // a checksum failure, it's useful diagnostic information
-                // even though it isn't guaranteed to be the byte the host
-                // actually intended if the corruption was elsewhere
+                //cmd byte was received either way, echo it even on a bad
+                //checksum since it's still useful for debugging even if it
+                //might not be what was actually intended
                 resp_pending<=1;
                 resp_cmd_echo<=cmd_id;
 
@@ -996,25 +926,20 @@ begin
 
                         CMD_INJECT_FAULT:
                         begin
-                            // Arg is reserved/unused -- one deterministic
-                            // fault type in M6, nothing to select. Arming
-                            // again while already trapped is harmless: a
-                            // trapped PicoRV32 never issues another
-                            // instruction fetch (see cpu_state_trap in
-                            // picorv32.v), so fault_pending would just sit
-                            // armed, unconsumed, until SYSTEM_RESET clears
-                            // it -- not undefined behavior, just inert.
+                            //arg unused, only one fault type right now.
+                            //arming again while already trapped is harmless
+                            //since a trapped cpu never fetches again anyway,
+                            //so fault_pending just sits armed until a reset
+                            //clears it
                             fault_pending<=1;
                             resp_status<=RESP_ACK;
                         end
 
                         CMD_SYSTEM_RESET:
                         begin
-                            // No RTL side effect here -- the actual reset
-                            // is armed downstream in the TX arbiter (state
-                            // 40) once this ACK has fully left the
-                            // transmitter, not at command-accept time. See
-                            // awaiting_reset_flush/reset_pulse_trigger.
+                            //no side effect here, the actual reset gets
+                            //armed downstream in the tx arbiter once this
+                            //ack is fully sent, see awaiting_reset_flush above
                             resp_status<=RESP_ACK;
                         end
 

@@ -11,20 +11,18 @@ MAGIC0=b"\xA5"
 TELEMETRY_MAGIC1=b"\x5A"
 RESPONSE_MAGIC1=b"\x5B"
 
-# Host->FPGA command frames happen to share telemetry's magic1 byte (0x5A)
-# -- direction alone (RX vs TX) already disambiguates them on the wire, so
-# the protocol didn't need a third value. Named separately here anyway so
-# a command frame isn't misread as "reusing the telemetry constant".
+#commands happen to share telemetry's magic1 byte (0x5A), direction alone
+#(rx vs tx) tells them apart on the wire so we never needed a third value.
+#named separately anyway so it doesn't look like we're reusing the
+#telemetry constant by accident
 COMMAND_MAGIC1=b"\x5A"
 
-# M4: telemetry version bumped 0x01->0x02, payload grew 22->27 bytes to add
-# DATA_RAM_COUNT and WORKLOAD_ID. Old field order/offsets are unchanged --
-# the new fields are appended at the end.
+#version bumped 0x01->0x02 when payload grew 22->27 bytes for
+#DATA_RAM_COUNT and WORKLOAD_ID, old field offsets stayed the same
 PAYLOAD_SIZE=27
 
-# Response packet (M3): MAGIC0 MAGIC1 VERSION CMD_ECHO STATUS DATA[0..3]
-# CHECKSUM. The 2-byte magic is read separately below, so this is just the
-# remaining VERSION+CMD_ECHO+STATUS+DATA(4)+CHECKSUM tail.
+#response packet: MAGIC0 MAGIC1 VERSION CMD_ECHO STATUS DATA[0..3] CHECKSUM
+#magic is read separately below so this is just the rest of it
 RESPONSE_PAYLOAD_SIZE=8
 
 CMD_PROTO_VER=0x01
@@ -53,14 +51,12 @@ RESP_STATUS_NAMES={
 WORKLOAD_IDS={"IDLE":0,"ALU":1,"MEMORY":2,"BRANCH":3,"MMIO":4,"MIXED":5}
 WORKLOAD_NAMES={v:k for k,v in WORKLOAD_IDS.items()}
 
-# Generous relative to actual response latency (well under a millisecond of
-# UART time at 115200 baud) -- this only matters if the FPGA has genuinely
-# stopped responding, in which case the caller should hear back well
-# before a user gives up on the button.
+#generous compared to actual response time (well under a ms at 115200
+#baud), this only matters if the fpga has genuinely stopped responding
 COMMAND_TIMEOUT=2.0
 
-# M7: recent events is enough for a demo/debug session -- this isn't meant
-# to be a persistent audit log (see TelemetryReader.clear_events).
+#recent events is enough for a demo/debug session, not meant to be a
+#persistent audit log (see clear_events)
 EVENT_HISTORY_SIZE=150
 
 
@@ -72,16 +68,14 @@ class TelemetryReader:
         self.lock=threading.Lock()
         self.running=False
 
-        # Set by the reader thread whenever the port is open, cleared on
-        # disconnect. send_command() reads this to write commands through
-        # the same connection the reader thread owns, instead of opening a
-        # second one.
+        #set by the reader thread whenever the port is open, cleared on
+        #disconnect. send_command() writes through this same connection
+        #instead of opening a second one
         self.ser=None
 
-        # The FPGA's response arbiter only has one pending-response slot,
-        # so only one host command may be outstanding at a time. Holding
-        # this lock for the full write-then-wait round trip is what
-        # enforces that, not just a convenience against races.
+        #fpga only has one pending-response slot so only one command can
+        #be outstanding at a time. holding this lock for the whole write
+        #then wait round trip is what actually enforces that
         self.command_lock=threading.Lock()
         self.response_event=threading.Event()
         self.response_packet=None
@@ -108,29 +102,25 @@ class TelemetryReader:
         self.previous=None
         self.previous_time=None
 
-        # M7: event history is shared between the reader thread (telemetry
-        # state transitions) and Flask request threads (command outcomes),
-        # so it gets its own lock rather than reusing self.lock -- an event
-        # append should never have to wait behind a telemetry snapshot, or
-        # vice versa.
+        #event history gets touched by both the reader thread and flask
+        #request threads, so it gets its own lock instead of sharing
+        #self.lock - an event append shouldn't have to wait on a
+        #telemetry snapshot or vice versa
         self.event_lock=threading.Lock()
         self.event_log=collections.deque(maxlen=EVENT_HISTORY_SIZE)
 
-        # Previous-state trackers for edge detection, read/written only
-        # from the reader thread (_handle_telemetry runs there exclusively)
-        # so they need no lock of their own. post_pass/trap start at False
-        # rather than None so a healthy board's first telemetry packet
-        # logs POST PASS without also logging a spurious TRAP CLEAR (there
-        # was nothing to clear). last_workload starts at None since 0 is a
-        # real workload (IDLE), not "unknown".
+        #tracks previous state for edge detection, only touched from the
+        #reader thread so no lock needed here. post_pass/trap start False
+        #instead of None so a healthy board's first packet logs POST PASS
+        #without also logging a fake TRAP CLEAR. last_workload starts at
+        #None since 0 is a real workload (idle), not "unknown"
         self.last_post_pass=False
         self.last_trap=False
         self.last_workload=None
 
-        # Set when trap transitions to True, consumed once trap has
-        # cleared AND POST has passed again -- this is what lets
-        # RECOVERY COMPLETE mean "actually recovered", not just "two
-        # unrelated transitions happened at some point".
+        #set when trap goes true, consumed once trap clears and post
+        #passes again - this is what makes RECOVERY COMPLETE mean
+        #something instead of just two unrelated transitions
         self.recovering=False
 
     def start(self):
@@ -170,10 +160,9 @@ class TelemetryReader:
 
                     self.add_event("connection","CONNECTED")
 
-                    # A reconnect has no visibility into what happened
-                    # while the port was closed, so treat it like a fresh
-                    # start for logging purposes rather than assuming
-                    # continuity with whatever was true before the gap.
+                    #a reconnect can't see what happened while the port was
+                    #closed, so treat it like a fresh start instead of
+                    #assuming anything carried over
                     self.last_post_pass=False
                     self.last_trap=False
                     self.last_workload=None
@@ -187,10 +176,9 @@ class TelemetryReader:
 
                         second=ser.read(1)
 
-                        # This is the one place bytes come off the wire, so
-                        # it's also the one place that classifies them --
-                        # telemetry and responses share the physical TX
-                        # line, and nothing downstream can afford to guess.
+                        #only place bytes come off the wire so it's also
+                        #the only place that classifies them - telemetry
+                        #and responses share the same tx line
                         if second==TELEMETRY_MAGIC1:
                             payload=self._read_exact(ser,PAYLOAD_SIZE)
 
@@ -208,9 +196,9 @@ class TelemetryReader:
                     was_connected=self.data["connected"]
                     self.data["connected"]=False
 
-                # Only log a transition -- if the port was never open in
-                # the first place (e.g. FPGA not yet plugged in when the
-                # app started), there's nothing to report as "disconnected".
+                #only log if we were actually connected before - if the
+                #port never opened in the first place there's nothing to
+                #call "disconnected"
                 if was_connected:
                     self.add_event("connection","DISCONNECTED")
 
@@ -227,10 +215,9 @@ class TelemetryReader:
 
         expected_checksum=version^cmd_echo^status^d0^d1^d2^d3
 
-        # Only one command can be outstanding at a time (command_lock
-        # enforces that), so whoever is currently waiting in send_command()
-        # is the intended recipient of the next response packet seen here.
-        # If nobody's waiting this is a stray/duplicate and gets dropped.
+        #only one command can be outstanding at a time, so whoever's
+        #waiting in send_command() is the one this response is for. if
+        #nobody's waiting it's a stray packet and gets dropped
         self.response_packet={
             "cmd_echo":cmd_echo,
             "status":status,
@@ -321,10 +308,9 @@ class TelemetryReader:
         self._log_telemetry_transitions(post_pass,trap,workload)
 
     def _log_telemetry_transitions(self,post_pass,trap,workload):
-        # Only runs from the reader thread (the sole caller of
-        # _handle_telemetry), so last_post_pass/last_trap/last_workload/
-        # recovering need no lock -- only event_log itself (touched from
-        # both this thread and Flask threads) does, inside add_event.
+        #only runs from the reader thread so last_post_pass/last_trap/
+        #last_workload/recovering need no lock, just event_log does
+        #(handled inside add_event)
         if trap!=self.last_trap:
             if trap:
                 self.add_event("fault","TRAP ASSERTED")
@@ -338,11 +324,9 @@ class TelemetryReader:
             self.add_event("post","POST PASS" if post_pass else "POST FAIL")
             self.last_post_pass=post_pass
 
-        # Checked fresh on every packet where either field changed, not
-        # assumed to happen in a specific order -- trap clearing and POST
-        # re-passing can land on the same telemetry packet or different
-        # ones depending on timing, and this only cares about the combined
-        # state, not which one changed most recently.
+        #checked fresh every packet, not assuming trap clear and post pass
+        #happen in any particular order - they can land on the same packet
+        #or different ones depending on timing
         if self.recovering and not trap and post_pass:
             self.add_event("recovery","RECOVERY COMPLETE")
             self.recovering=False
@@ -365,9 +349,8 @@ class TelemetryReader:
             "message":message
         }
 
-        # Held only for the append itself, never around a serial read/
-        # write or an HTTP response -- a slow Flask request can't stall
-        # the reader thread's own logging, or vice versa.
+        #only held for the append itself, never around a serial read/write
+        #or an http response, so neither side can stall the other
         with self.event_lock:
             self.event_log.append(entry)
 
@@ -376,20 +359,16 @@ class TelemetryReader:
             return list(self.event_log)
 
     def clear_events(self):
-        # Host-side display history only. This never touches the FPGA and
-        # must not be confused with RESET_COUNTERS/SYSTEM_RESET. Also
-        # deliberately doesn't reset last_post_pass/last_trap/
-        # last_workload/recovering -- those track real hardware state, not
-        # what's currently displayed, so clearing the log can't cause the
-        # next telemetry packet to spuriously re-log a state that hasn't
-        # actually changed.
+        #host-side display history only, never touches the fpga, not to
+        #be confused with RESET_COUNTERS/SYSTEM_RESET. leaves the last_*
+        #trackers alone since those track real hardware state, not what's
+        #currently on screen
         with self.event_lock:
             self.event_log.clear()
 
     def send_command(self,cmd,arg=0):
-        # acquire(timeout=...) rather than a blocking acquire so a rapid
-        # double-click (or two browser tabs) gets a clean "busy" result
-        # instead of silently queueing behind whatever's already in flight
+        #timeout instead of a blocking acquire so a rapid double click (or
+        #two browser tabs) gets a clean "busy" back instead of queueing up
         if not self.command_lock.acquire(timeout=0.1):
             return {"ok":False,"error":"busy"}
 
@@ -407,9 +386,9 @@ class TelemetryReader:
 
             frame=MAGIC0+COMMAND_MAGIC1+bytes([CMD_PROTO_VER,cmd])+arg_bytes+bytes([checksum])
 
-            # cleared right before writing, not right after opening the
-            # lock, so a stale event/packet from a previous call can never
-            # be mistaken for this one's response
+            #cleared right before writing, not right after grabbing the
+            #lock, so a stale packet from a previous call can't be
+            #mistaken for this one's response
             self.response_event.clear()
             self.response_packet=None
 

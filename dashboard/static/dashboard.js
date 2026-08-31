@@ -5,7 +5,7 @@ const instructionHistory=[];
 const dataRamHistory=[];
 const mmioHistory=[];
 
-// Index matches the WORKLOAD_ID byte in telemetry (see main.c's WL_* enum)
+//index matches the WORKLOAD_ID byte in telemetry, see main.c's WL_* enum
 const WORKLOAD_NAMES=["IDLE","ALU","MEMORY","BRANCH","MMIO","MIXED"];
 
 
@@ -105,16 +105,11 @@ function formatNumber(value) {
 }
 
 
-// Controls are disabled whenever a command is in flight (the FPGA only has
-// one pending-response slot, see serial_reader.py's command_lock), the
-// link is down, or the CPU is trapped. trapped comes from telemetry's own
-// trap field, never from a button click -- a trapped PicoRV32 isn't
-// running firmware, so anything that depends on firmware (workload
-// selection, RESET_COUNTERS, CAPTURE_SNAPSHOT, another fault injection)
-// stops making sense until SYSTEM_RESET recovers it. SYSTEM_RESET itself
-// is deliberately exempt: it's the only thing that can ever get out of a
-// trapped state, and it works independently of CPU execution since the
-// command/response path lives below the CPU, not inside it.
+//controls disable when a command is in flight, the link is down, or the
+//cpu is trapped. trapped comes from telemetry's own field, never from a
+//click - a trapped cpu isn't running firmware so anything that depends on
+//it stops making sense until SYSTEM_RESET. reset itself stays enabled
+//since it's the only way out and works independent of cpu execution
 let commandBusy=false;
 let linkConnected=false;
 let trapped=false;
@@ -178,9 +173,8 @@ async function refreshTelemetry() {
 
         const trap=document.getElementById("trap");
 
-        // This is the authoritative fault indicator -- trapped controls
-        // which buttons are disabled below, and it comes from nowhere but
-        // this field. Never set from a button click or an ACK.
+        //this is the real fault indicator, drives which buttons get
+        //disabled below - never set from a click or an ack
         trapped=data.trap;
         syncControlState();
 
@@ -221,9 +215,8 @@ async function refreshTelemetry() {
         document.getElementById("packets").textContent=
             data.packets.toLocaleString();
 
-        // The active workload button follows telemetry's WORKLOAD_ID, not
-        // whichever button was last clicked -- this is the FPGA's own
-        // reported state, so the UI can't get out of sync with hardware.
+        //active workload button follows telemetry's WORKLOAD_ID, not
+        //whichever button got clicked, so the ui can't drift from hardware
         const activeWorkload=WORKLOAD_NAMES[data.workload];
 
         document.getElementById("active-workload").textContent=
@@ -249,10 +242,9 @@ async function refreshTelemetry() {
 }
 
 
-// One shared function for all three control requests instead of six
-// near-identical fetch blocks. Controls stay disabled for the whole round
-// trip (not just the click) because the FPGA can only have one command
-// outstanding at a time.
+//one shared function instead of six near identical fetch blocks. controls
+//stay disabled for the whole round trip since the fpga only allows one
+//command outstanding at a time
 async function sendCommand(url,body,label) {
     if(commandBusy) {
         return null;
@@ -320,33 +312,28 @@ async function captureSnapshot() {
 }
 
 
-// The ACK here only means "armed" -- it says nothing about whether the CPU
-// has actually trapped yet. The #trap indicator (and everything it
-// disables) only ever changes once telemetry reports trap=1 on a later
-// poll, not from this response.
+//ack just means "armed" here, says nothing about whether the cpu has
+//actually trapped yet. the #trap indicator only changes once telemetry
+//reports trap=1 on a later poll, not from this response
 function injectFault() {
     sendCommand("/api/inject-fault",{},"INJECT_FAULT");
 }
 
 
-// Same reasoning in reverse: this ACK only means the FPGA accepted the
-// reset request and the response has left the transmitter -- POST hasn't
-// necessarily rerun yet. refreshTelemetry()'s normal polling is what
-// eventually shows POST PASS and TRAP CLEAR again; a temporary gap in
-// telemetry right after this is expected, not a disconnect.
+//same idea in reverse - this ack just means the fpga accepted the reset
+//request, post hasn't necessarily rerun yet. normal telemetry polling is
+//what eventually shows POST PASS and TRAP CLEAR again
 function systemReset() {
     sendCommand("/api/system-reset",{},"SYSTEM_RESET");
 }
 
 
-// M7: the event log itself is entirely backend-owned (see
-// serial_reader.py's add_event/_log_telemetry_transitions) -- this file
-// only renders whatever /api/events returns. No event is ever created
-// here from a click or a guess at hardware state.
+//event log is entirely backend owned (see serial_reader.py), this file
+//just renders whatever /api/events returns, never creates one from a
+//click or a guess at hardware state
 
-// A restrained text-color hint, not a badge system -- checked against the
-// message content rather than the backend's coarse "kind" so CONNECTED
-// and DISCONNECTED (same kind) can still read differently.
+//restrained text color hint, checked against message content instead of
+//the backend's coarse "kind" so CONNECTED and DISCONNECTED read differently
 function eventAccentClass(message) {
     if(message.includes("TRAP ASSERTED")) return "event-danger";
     if(message.includes("DISCONNECTED")) return "event-danger";
@@ -365,11 +352,9 @@ function eventAccentClass(message) {
 }
 
 
-// Renders incrementally (only appends events past what's already on
-// screen) rather than rebuilding the whole list every poll -- avoids
-// flicker and keeps "stay pinned to the bottom unless the user scrolled
-// up" simple. A shrinking event count means the log was cleared (or Flask
-// restarted), so that's the one case worth a full rebuild.
+//only appends new events instead of rebuilding the whole list every poll,
+//avoids flicker and makes "stay pinned to bottom" simple. a shrinking
+//count means the log got cleared (or flask restarted) so rebuild then
 let renderedEventCount=0;
 
 function renderEvents(events) {

@@ -12,12 +12,12 @@ CMD_PING = 0x01
 CMD_RESET_COUNTERS = 0x02
 CMD_SET_WORKLOAD = 0x04
 
-TELEMETRY_PAYLOAD_SIZE = 27  # M4: version 0x02, +DATA_RAM_COUNT +WORKLOAD_ID
+TELEMETRY_PAYLOAD_SIZE = 27  #version 0x02, +DATA_RAM_COUNT +WORKLOAD_ID
 RESPONSE_PAYLOAD_SIZE = 8
 
 WORKLOADS = [(0, "IDLE"), (1, "ALU"), (2, "MEMORY"), (3, "BRANCH"), (4, "MMIO"), (5, "MIXED")]
 
-COLLECT_SECONDS = 2.5  # telemetry is ~1/s, this comfortably spans 2 samples
+COLLECT_SECONDS = 2.5  #telemetry is ~1/s so this spans a couple samples
 
 
 def build_frame(cmd, arg=0):
@@ -116,15 +116,15 @@ if __name__ == "__main__":
                 print(f"FAIL: SET_WORKLOAD {wl_name} did not ACK")
                 sys.exit(1)
 
-            time.sleep(0.3)  # let a stale in-flight previous-workload call finish
+            time.sleep(0.3)  #let a stale in-flight previous workload call finish
 
             first, last = collect_telemetry(ser, COLLECT_SECONDS)
             if first is None or last is None:
                 print(f"FAIL: no telemetry collected for {wl_name}")
                 sys.exit(1)
 
-            # cycle-counter delta, not wall-clock time, so the rate reflects
-            # actual hardware execution rather than host/OS scheduling jitter
+            #cycle counter delta, not wall clock, so this reflects actual
+            #hardware execution instead of host/os scheduling jitter
             elapsed_cycles = last["cycles"] - first["cycles"]
             elapsed_s = elapsed_cycles / 50_000_000.0 if elapsed_cycles > 0 else 0
 
@@ -148,8 +148,7 @@ if __name__ == "__main__":
             print(f"{wl_name:<10}{r['instr_rate']:>12.0f}{r['dram_rate']:>14.0f}"
                   f"{r['mmio_rate']:>12.0f}{r['cpi']:>8.2f}")
 
-        # sanity checks on workload intent, not hardcoded thresholds --
-        # these numbers haven't been measured on real hardware yet
+        #sanity checks on workload intent, not hardcoded thresholds
         print()
         warnings = []
 
