@@ -38,9 +38,37 @@ def telemetry_api():
     return jsonify(telemetry.snapshot())
 
 
-def _command_response(command_name,result,extra=None):
+@app.route("/api/events")
+def events_api():
+    return jsonify({"events":telemetry.get_events()})
+
+
+@app.route("/api/events/clear",methods=["POST"])
+def clear_events_api():
+    # Host-side display history only -- never sends anything to the FPGA,
+    # not to be confused with RESET_COUNTERS or SYSTEM_RESET.
+    telemetry.clear_events()
+    return jsonify({"ok":True})
+
+
+# M7: one place shapes both the HTTP response and the logged event for
+# every command endpoint, so ACK/NACK/timeout/busy/error wording can't
+# drift between what the API returns and what the event log says
+# happened. log_label lets a caller log something more specific than the
+# generic command_name (e.g. "SET_WORKLOAD MEMORY" instead of just
+# "SET_WORKLOAD") without changing the JSON "command" field's meaning.
+def _command_response(command_name,result,extra=None,log_label=None):
+    label=log_label if log_label is not None else command_name
+
     if not result["ok"]:
         code=_ERROR_STATUS_CODES.get(result["error"],503)
+
+        if result["error"]=="busy":
+            telemetry.add_event("command",f"{label} BUSY")
+        elif result["error"]=="timeout":
+            telemetry.add_event("command",f"{label} TIMEOUT")
+        else:
+            telemetry.add_event("command",f"COMMAND ERROR {result['error']}")
 
         return jsonify({
             "ok":False,
@@ -48,10 +76,21 @@ def _command_response(command_name,result,extra=None):
             "error":result["error"]
         }),code
 
+    status_name=RESP_STATUS_NAMES.get(result["status"],"UNKNOWN")
+
+    if result["status"]==RESP_ACK:
+        extra_text=""
+        if extra and "instruction_count" in extra:
+            extra_text=f"  instr={extra['instruction_count']}"
+
+        telemetry.add_event("command",f"{label} ACK{extra_text}")
+    else:
+        telemetry.add_event("command",f"{label} {status_name}")
+
     body={
         "ok":result["status"]==RESP_ACK,
         "command":command_name,
-        "status":RESP_STATUS_NAMES.get(result["status"],"UNKNOWN")
+        "status":status_name
     }
 
     if extra:
@@ -94,7 +133,8 @@ def workload_api():
     return _command_response(
         "SET_WORKLOAD",
         result,
-        extra={"workload":WORKLOAD_NAMES[workload_id]}
+        extra={"workload":WORKLOAD_NAMES[workload_id]},
+        log_label=f"SET_WORKLOAD {WORKLOAD_NAMES[workload_id]}"
     )
 
 

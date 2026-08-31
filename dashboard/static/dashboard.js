@@ -339,6 +339,106 @@ function systemReset() {
 }
 
 
+// M7: the event log itself is entirely backend-owned (see
+// serial_reader.py's add_event/_log_telemetry_transitions) -- this file
+// only renders whatever /api/events returns. No event is ever created
+// here from a click or a guess at hardware state.
+
+// A restrained text-color hint, not a badge system -- checked against the
+// message content rather than the backend's coarse "kind" so CONNECTED
+// and DISCONNECTED (same kind) can still read differently.
+function eventAccentClass(message) {
+    if(message.includes("TRAP ASSERTED")) return "event-danger";
+    if(message.includes("DISCONNECTED")) return "event-danger";
+    if(message.includes("POST FAIL")) return "event-danger";
+    if(message.includes("TIMEOUT")) return "event-danger";
+    if(message.includes("COMMAND ERROR")) return "event-danger";
+    if(message.includes("NACK")) return "event-danger";
+    if(message.includes("BUSY")) return "event-warn";
+    if(message.includes("ACK")) return "event-ok";
+    if(message.includes("PASS")) return "event-ok";
+    if(message.includes("CLEAR")) return "event-ok";
+    if(message.includes("CONNECTED")) return "event-ok";
+    if(message.includes("COMPLETE")) return "event-ok";
+    if(message.includes("ACTIVE")) return "event-ok";
+    return "";
+}
+
+
+// Renders incrementally (only appends events past what's already on
+// screen) rather than rebuilding the whole list every poll -- avoids
+// flicker and keeps "stay pinned to the bottom unless the user scrolled
+// up" simple. A shrinking event count means the log was cleared (or Flask
+// restarted), so that's the one case worth a full rebuild.
+let renderedEventCount=0;
+
+function renderEvents(events) {
+    const log=document.getElementById("event-log");
+
+    if(events.length<renderedEventCount) {
+        log.innerHTML="";
+        renderedEventCount=0;
+    }
+
+    if(events.length===renderedEventCount) {
+        return;
+    }
+
+    const wasAtBottom=(log.scrollTop+log.clientHeight)>=(log.scrollHeight-4);
+
+    for(let i=renderedEventCount;i<events.length;i++) {
+        const event=events[i];
+
+        const row=document.createElement("div");
+        row.className="event-row";
+
+        const time=document.createElement("span");
+        time.className="event-time";
+        time.textContent=event.time;
+
+        const message=document.createElement("span");
+        message.className=`event-message ${eventAccentClass(event.message)}`;
+        message.textContent=event.message;
+
+        row.appendChild(time);
+        row.appendChild(message);
+        log.appendChild(row);
+    }
+
+    renderedEventCount=events.length;
+
+    if(wasAtBottom) {
+        log.scrollTop=log.scrollHeight;
+    }
+}
+
+
+async function refreshEvents() {
+    try {
+        const response=await fetch("/api/events");
+        const data=await response.json();
+
+        renderEvents(data.events);
+    }
+    catch(error) {
+        console.error(error);
+    }
+}
+
+
+async function clearEvents() {
+    try {
+        await fetch("/api/events/clear",{method:"POST"});
+
+        renderedEventCount=0;
+        document.getElementById("event-log").innerHTML="";
+    }
+    catch(error) {
+        console.error(error);
+    }
+}
+
+
 document.querySelectorAll(".workload-btn").forEach((btn) => {
     btn.addEventListener("click",() => setWorkload(btn.dataset.workload));
 });
@@ -347,8 +447,11 @@ document.getElementById("reset-counters-btn").addEventListener("click",resetCoun
 document.getElementById("snapshot-btn").addEventListener("click",captureSnapshot);
 document.getElementById("inject-fault-btn").addEventListener("click",injectFault);
 document.getElementById("system-reset-btn").addEventListener("click",systemReset);
+document.getElementById("clear-events-btn").addEventListener("click",clearEvents);
 
 
 setInterval(refreshTelemetry,1000);
+setInterval(refreshEvents,1000);
 
 refreshTelemetry();
+refreshEvents();

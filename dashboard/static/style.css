@@ -11,6 +11,7 @@
     --muted:#7d878d;
     --accent:#7ed0a4;
     --danger:#ef7a7a;
+    --warn:#d9a441;
 }
 
 body {
@@ -308,6 +309,63 @@ h1 {
 .status-strip strong {
     font-size:11px;
     font-weight:600;
+}
+
+.event-panel {
+    margin-top:18px;
+}
+
+.event-header {
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    margin-bottom:10px;
+}
+
+.event-header .panel-title {
+    margin-bottom:0;
+}
+
+.event-header .control-btn {
+    padding:5px 12px;
+}
+
+.event-log {
+    height:220px;
+    overflow-y:auto;
+    border-top:1px solid var(--line-soft);
+    padding-top:6px;
+}
+
+.event-row {
+    display:flex;
+    gap:14px;
+    padding:2px 0;
+    font-size:11px;
+}
+
+.event-time {
+    color:var(--muted);
+    flex-shrink:0;
+    font-variant-numeric:tabular-nums;
+}
+
+.event-message {
+    color:var(--text);
+}
+
+/* Restrained accents on the message text only, not the whole row -- see
+   dashboard.js's eventAccentClass for what maps to which. */
+.event-message.event-ok {
+    color:var(--accent);
+}
+
+.event-message.event-warn {
+    color:var(--warn);
+}
+
+.event-message.event-danger {
+    color:var(--danger);
 }
 
 footer {

@@ -1,3 +1,5 @@
+import collections
+import datetime
 import struct
 import threading
 import time
@@ -57,6 +59,10 @@ WORKLOAD_NAMES={v:k for k,v in WORKLOAD_IDS.items()}
 # before a user gives up on the button.
 COMMAND_TIMEOUT=2.0
 
+# M7: recent events is enough for a demo/debug session -- this isn't meant
+# to be a persistent audit log (see TelemetryReader.clear_events).
+EVENT_HISTORY_SIZE=150
+
 
 class TelemetryReader:
     def __init__(self,port,baud=115200):
@@ -102,6 +108,31 @@ class TelemetryReader:
         self.previous=None
         self.previous_time=None
 
+        # M7: event history is shared between the reader thread (telemetry
+        # state transitions) and Flask request threads (command outcomes),
+        # so it gets its own lock rather than reusing self.lock -- an event
+        # append should never have to wait behind a telemetry snapshot, or
+        # vice versa.
+        self.event_lock=threading.Lock()
+        self.event_log=collections.deque(maxlen=EVENT_HISTORY_SIZE)
+
+        # Previous-state trackers for edge detection, read/written only
+        # from the reader thread (_handle_telemetry runs there exclusively)
+        # so they need no lock of their own. post_pass/trap start at False
+        # rather than None so a healthy board's first telemetry packet
+        # logs POST PASS without also logging a spurious TRAP CLEAR (there
+        # was nothing to clear). last_workload starts at None since 0 is a
+        # real workload (IDLE), not "unknown".
+        self.last_post_pass=False
+        self.last_trap=False
+        self.last_workload=None
+
+        # Set when trap transitions to True, consumed once trap has
+        # cleared AND POST has passed again -- this is what lets
+        # RECOVERY COMPLETE mean "actually recovered", not just "two
+        # unrelated transitions happened at some point".
+        self.recovering=False
+
     def start(self):
         self.running=True
 
@@ -137,6 +168,17 @@ class TelemetryReader:
                     with self.lock:
                         self.data["connected"]=True
 
+                    self.add_event("connection","CONNECTED")
+
+                    # A reconnect has no visibility into what happened
+                    # while the port was closed, so treat it like a fresh
+                    # start for logging purposes rather than assuming
+                    # continuity with whatever was true before the gap.
+                    self.last_post_pass=False
+                    self.last_trap=False
+                    self.last_workload=None
+                    self.recovering=False
+
                     while self.running:
                         first=ser.read(1)
 
@@ -163,7 +205,14 @@ class TelemetryReader:
 
             except serial.SerialException:
                 with self.lock:
+                    was_connected=self.data["connected"]
                     self.data["connected"]=False
+
+                # Only log a transition -- if the port was never open in
+                # the first place (e.g. FPGA not yet plugged in when the
+                # app started), there's nothing to report as "disconnected".
+                if was_connected:
+                    self.add_event("connection","DISCONNECTED")
 
                 time.sleep(1)
 
@@ -246,12 +295,15 @@ class TelemetryReader:
 
         self.previous_time=now
 
+        post_pass=bool(flags&0x01)
+        trap=bool(flags&0x02)
+
         with self.lock:
             self.data.update({
                 "connected":True,
                 "version":version,
-                "post_pass":bool(flags&0x01),
-                "trap":bool(flags&0x02),
+                "post_pass":post_pass,
+                "trap":trap,
                 "cycles":cycles,
                 "instructions":instructions,
                 "memory":memory,
@@ -266,9 +318,73 @@ class TelemetryReader:
                 "packets":self.data["packets"]+1
             })
 
+        self._log_telemetry_transitions(post_pass,trap,workload)
+
+    def _log_telemetry_transitions(self,post_pass,trap,workload):
+        # Only runs from the reader thread (the sole caller of
+        # _handle_telemetry), so last_post_pass/last_trap/last_workload/
+        # recovering need no lock -- only event_log itself (touched from
+        # both this thread and Flask threads) does, inside add_event.
+        if trap!=self.last_trap:
+            if trap:
+                self.add_event("fault","TRAP ASSERTED")
+                self.recovering=True
+            else:
+                self.add_event("fault","TRAP CLEAR")
+
+            self.last_trap=trap
+
+        if post_pass!=self.last_post_pass:
+            self.add_event("post","POST PASS" if post_pass else "POST FAIL")
+            self.last_post_pass=post_pass
+
+        # Checked fresh on every packet where either field changed, not
+        # assumed to happen in a specific order -- trap clearing and POST
+        # re-passing can land on the same telemetry packet or different
+        # ones depending on timing, and this only cares about the combined
+        # state, not which one changed most recently.
+        if self.recovering and not trap and post_pass:
+            self.add_event("recovery","RECOVERY COMPLETE")
+            self.recovering=False
+
+        if workload!=self.last_workload:
+            workload_name=WORKLOAD_NAMES.get(workload,str(workload))
+            self.add_event("workload",f"WORKLOAD ACTIVE {workload_name}")
+            self.last_workload=workload
+
     def snapshot(self):
         with self.lock:
             return dict(self.data)
+
+    def add_event(self,kind,message):
+        now=datetime.datetime.now()
+
+        entry={
+            "time":now.strftime("%H:%M:%S.")+f"{now.microsecond//1000:03d}",
+            "kind":kind,
+            "message":message
+        }
+
+        # Held only for the append itself, never around a serial read/
+        # write or an HTTP response -- a slow Flask request can't stall
+        # the reader thread's own logging, or vice versa.
+        with self.event_lock:
+            self.event_log.append(entry)
+
+    def get_events(self):
+        with self.event_lock:
+            return list(self.event_log)
+
+    def clear_events(self):
+        # Host-side display history only. This never touches the FPGA and
+        # must not be confused with RESET_COUNTERS/SYSTEM_RESET. Also
+        # deliberately doesn't reset last_post_pass/last_trap/
+        # last_workload/recovering -- those track real hardware state, not
+        # what's currently displayed, so clearing the log can't cause the
+        # next telemetry packet to spuriously re-log a state that hasn't
+        # actually changed.
+        with self.event_lock:
+            self.event_log.clear()
 
     def send_command(self,cmd,arg=0):
         # acquire(timeout=...) rather than a blocking acquire so a rapid
