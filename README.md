@@ -1,4 +1,3 @@
-````markdown
 # RISC V FPGA Experimentation Platform
 
 This project is a small RISC V computer built on an FPGA, but the goal was not just to get a processor running.
@@ -112,7 +111,7 @@ data RAM accesses
 MMIO accesses
 trap state
 active workload
-````
+```
 
 The important part is that these measurements are not being made by the firmware itself.
 
@@ -164,12 +163,12 @@ The POST checks several important parts of the SoC.
 
 It checks
 
-* GPIO and MMIO
-* system status
-* cycle counter
-* debug register reads and writes
-* execution counters
-* snapshot registers
+- GPIO and MMIO
+- system status
+- cycle counter
+- debug register reads and writes
+- execution counters
+- snapshot registers
 
 A successful POST ends with
 
@@ -429,21 +428,21 @@ The current telemetry packet uses version 0x02.
 
 It includes
 
-* flags
-* 64 bit cycle count
-* instruction count
-* total RAM count
-* MMIO count
-* data RAM count
-* active workload
+- flags
+- 64 bit cycle count
+- instruction count
+- total RAM count
+- MMIO count
+- data RAM count
+- active workload
 
 The Python host uses these values to calculate
 
-* instructions per second
-* total RAM accesses per second
-* data RAM accesses per second
-* MMIO accesses per second
-* CPI
+- instructions per second
+- total RAM accesses per second
+- data RAM accesses per second
+- MMIO accesses per second
+- CPI
 
 # Hardware snapshots
 
@@ -581,33 +580,33 @@ RECOVER
 
 The dashboard is built using
 
-* Python
-* Flask
-* pyserial
-* HTML
-* CSS
-* JavaScript
-* Chart.js
+- Python
+- Flask
+- pyserial
+- HTML
+- CSS
+- JavaScript
+- Chart.js
 
 The interface was intentionally made to look more like engineering instrumentation software than a normal web application.
 
 The dashboard shows
 
-* connection state
-* CPU information
-* POST state
-* trap state
-* counters
-* live rates
-* CPI
-* activity graph
-* active workload
-* workload controls
-* reset counters control
-* snapshot control
-* fault injection control
-* system reset control
-* event log
+- connection state
+- CPU information
+- POST state
+- trap state
+- counters
+- live rates
+- CPI
+- activity graph
+- active workload
+- workload controls
+- reset counters control
+- snapshot control
+- fault injection control
+- system reset control
+- event log
 
 The active workload shown in the browser comes from FPGA telemetry.
 
@@ -808,20 +807,20 @@ Icarus Verilog is used for RTL simulation.
 
 The project includes tests for things such as
 
-* UART RX
-* malformed packets
-* parser timeout and recovery
-* command ACK and NACK responses
-* workload selection
-* performance counters
-* data RAM counting
-* snapshot behavior
-* telemetry and response arbitration
-* illegal instruction injection
-* real PicoRV32 trap behavior
-* full system reset
-* POST after reset
-* post recovery commands
+- UART RX
+- malformed packets
+- parser timeout and recovery
+- command ACK and NACK responses
+- workload selection
+- performance counters
+- data RAM counting
+- snapshot behavior
+- telemetry and response arbitration
+- illegal instruction injection
+- real PicoRV32 trap behavior
+- full system reset
+- POST after reset
+- post recovery commands
 
 The main integration tests are in the `sim` directory.
 
@@ -886,20 +885,15 @@ The goal is to build a small system where another student can actually experimen
 
 Someone can use it to see things such as
 
-* how different workloads change processor behavior
-* how instruction fetches affect total memory traffic
-* how data memory activity differs from total RAM activity
-* how MMIO traffic appears
-* how CPI changes
-* how hardware counters can observe a CPU
-* how UART can be used as a control and telemetry channel
-* how an illegal instruction causes a real processor trap
-* how a system can detect a fault and recover through reset
-* why FPGA timing closure matters even when simulation passes
+- how different workloads change processor behavior
+- how instruction fetches affect total memory traffic
+- how data memory activity differs from total RAM activity
+- how MMIO traffic appears
+- how CPI changes
+- how hardware counters can observe a CPU
+- how UART can be used as a control and telemetry channel
+- how an illegal instruction causes a real processor trap
+- how a system can detect a fault and recover through reset
+- why FPGA timing closure matters even when simulation passes
 
 The final result is a small hands on RISC V architecture and fault observability lab running on real FPGA hardware.
-
-```
-
-One thing I’d still do before publishing it is add **2 or 3 screenshots** near the top. One dashboard screenshot, one physical board photo with the LEDs, and ideally one screenshot during the trap state. That would make this README much stronger immediately.
-```
