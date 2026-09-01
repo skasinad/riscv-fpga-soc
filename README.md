@@ -1,5 +1,5 @@
 # RISC V FPGA Experimentation Platform
-
+[Link for video demonstration](https://drive.google.com/file/d/1yuzfY7mUa41g7OHrjCE1uGmEuxYOjFrQ/view)
 This project is a small RISC V computer built on an FPGA, but the goal was not just to get a processor running.
 
 I wanted to build something where I could actually see what the processor was doing, control how it was running, and even intentionally make it fail in a controlled way.
